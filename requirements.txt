@@ -4,4 +4,4 @@ playwright-stealth
 openai
 easyocr
 pandas
-pillow
+Pillow
