@@ -38,20 +38,17 @@ client = OpenAI(api_key=OPENAI_KEY)
 # --- 3. CORE LOGIC ---
 def google_search_deep(query, worldwide=False, num_pages=1):
     if not GOOGLE_API_KEY or not GOOGLE_CX:
-        st.error("Google API Keys missing!")
         return []
     all_links = []
     for i in range(num_pages):
         start_index = (i * 10) + 1
         base_url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}&start={start_index}"
-        if not worldwide: 
-            base_url += "&cr=countryAU"
+        if not worldwide: base_url += "&cr=countryAU"
         try:
             response = requests.get(base_url, timeout=10)
             items = response.json().get("items", [])
             all_links.extend([item['link'] for item in items if "facebook" not in item['link']])
-        except: 
-            break
+        except: break
     return list(dict.fromkeys(all_links))
 
 def analyze_with_vision(image_path, product_name):
@@ -60,87 +57,80 @@ def analyze_with_vision(image_path, product_name):
             img.thumbnail((1000, 1000)) 
             compressed_path = "small_" + image_path
             img.save(compressed_path, "JPEG", quality=70)
-        
         with open(compressed_path, "rb") as f:
             base64_img = base64.b64encode(f.read()).decode('utf-8')
-        
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Extract the current price for {product_name} from this screenshot. Return ONLY the numeric price. If unavailable, return 'N/A'."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-                ]
+                "content": [{"type": "text", "text": f"Extract the current price for {product_name}. Return ONLY the numeric price. If blocked/no price, return 'N/A'."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}]
             }],
             max_tokens=50
         )
         if os.path.exists(compressed_path): os.remove(compressed_path)
         return response.choices[0].message.content.strip()
-    except Exception as e:
-        if "429" in str(e): return "Rate Limited"
-        return "AI Error"
+    except Exception: return "AI Error"
 
 def run_browser_watch(url, product_name):
-    """Enhanced version to bypass Timeouts and Bot Blocks."""
     with sync_playwright() as p:
-        # Using a more standard browser launch
         browser = p.chromium.launch(headless=True)
-        # Randomizing the User-Agent to look like a real Windows Chrome user
+        # Emulate a very specific Mac/Chrome user to bypass basic bot blocks
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={'width': 1440, 'height': 900}
         )
         page = context.new_page()
         try:
             stealth(page)
-            # Use 'load' instead of 'networkidle' to prevent hanging on tracker scripts
-            page.goto(url, wait_until="load", timeout=60000)
-            
-            # Simulate a human scroll to trigger lazy-loaded prices
-            page.mouse.wheel(0, 500)
-            time.sleep(random.uniform(2, 4))
-            
+            # Bypass navigator.webdriver detection
+            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            time.sleep(random.uniform(3, 6)) # Wait for prices to render
             img_path = f"snap_{os.getpid()}.png"
-            # Full page screenshot increases chances of catching the price
-            page.screenshot(path=img_path, full_page=True)
-            
+            page.screenshot(path=img_path, full_page=False)
             price = analyze_with_vision(img_path, product_name)
             if os.path.exists(img_path): os.remove(img_path)
             return price
-        except Exception as e:
-            return "Timeout/Block"
-        finally:
-            browser.close()
+        except Exception: return "Timeout/Block"
+        finally: browser.close()
 
 # --- 4. UI LAYOUT ---
 st.set_page_config(page_title="Price Watch AI", layout="wide")
-if not st.session_state.get("browser_installed"):
-    install_playwright_browsers()
+if not st.session_state.get("browser_installed"): install_playwright_browsers()
 
-st.title("🛒 AI Price Watcher (Anti-Block Mode)")
+st.title("🛒 AI Price Watcher (Multi-SKU Mode)")
 
 with st.sidebar:
     st.header("Search Parameters")
-    sku_input = st.text_input("Product Name / SKU", key="sku_entry")
+    # MULTI-SKU SUPPORT: Now accepts comma separated values
+    sku_input = st.text_area("Product Names / SKUs (separate by comma)", help="Example: AM272P, MSI Monitor, iPhone 15")
     is_worldwide = st.checkbox("Search Worldwide?", value=False)
-    depth = st.slider("Pages to search", 1, 3, 1)
     
-    if st.button("Find Resellers"):
+    st.divider()
+    st.header("Manual Link Entry")
+    manual_sku = st.text_input("Manual SKU Name")
+    manual_url = st.text_input("Manual URL")
+    
+    if st.button("Add to List"):
+        watchlist = get_watchlist()
+        # 1. Handle Bulk SKUs
         if sku_input:
-            with st.spinner("Finding stores..."):
-                links = google_search_deep(sku_input, is_worldwide, depth)
-                watchlist = get_watchlist()
-                for l in links:
-                    if not any(item['url'] == l for item in watchlist):
-                        watchlist.append({
-                            "sku": sku_input, 
-                            "url": l, 
-                            "price": "Pending", 
-                            "last_updated": "Never"
-                        })
-                st.session_state["items"] = watchlist
-                st.rerun()
+            skus = [s.strip() for s in sku_input.split(",") if s.strip()]
+            for s in skus:
+                with st.spinner(f"Finding stores for {s}..."):
+                    links = google_search_deep(s, is_worldwide, num_pages=1)
+                    for l in links:
+                        if not any(item['url'] == l for item in watchlist):
+                            watchlist.append({"sku": s, "url": l, "price": "Pending", "last_updated": "Never"})
+        
+        # 2. Handle Manual Entry
+        if manual_sku and manual_url:
+            if not any(item['url'] == manual_url for item in watchlist):
+                watchlist.append({"sku": manual_sku, "url": manual_url, "price": "Pending", "last_updated": "Never"})
+        
+        st.session_state["items"] = watchlist
+        st.rerun()
 
     if st.button("🗑️ Clear All"):
         st.session_state["items"] = []
@@ -149,28 +139,32 @@ with st.sidebar:
 # --- 5. RESULTS ---
 watchlist = get_watchlist()
 if watchlist:
-    st.subheader(f"Watchlist ({len(watchlist)} sellers)")
+    st.subheader(f"Watchlist ({len(watchlist)} items)")
     df = pd.DataFrame(watchlist)
-    display_cols = [c for c in ["sku", "price", "last_updated", "url"] if c in df.columns]
-    st.dataframe(df[display_cols], use_container_width=True)
+    
+    # CLICKABLE LINKS: Transform the URL column into HTML links
+    def make_clickable(link):
+        return f'<a href="{link}" target="_blank">Open Store</a>'
+    
+    df_display = df.copy()
+    df_display['url'] = df_display['url'].apply(make_clickable)
+    
+    # Display table with HTML rendering enabled
+    st.write(df_display[["sku", "price", "last_updated", "url"]].to_html(escape=False, index=False), unsafe_allow_html=True)
     
     if st.button("🚀 Start Scanning Prices"):
         status_box = st.empty()
         bar = st.progress(0)
-        
         for i, item in enumerate(watchlist):
-            status_box.info(f"Scanning {i+1}/{len(watchlist)}: {item['url'][:50]}...")
+            status_box.info(f"Scanning {i+1}/{len(watchlist)}: {item['sku']}...")
             found_price = run_browser_watch(item['url'], item['sku'])
-            
             st.session_state["items"][i]["price"] = found_price
             st.session_state["items"][i]["last_updated"] = datetime.now().strftime("%H:%M")
             bar.progress((i + 1) / len(watchlist))
-            
             if i < len(watchlist) - 1:
-                status_box.warning("API Cooldown: Waiting 8s...")
+                status_box.warning("Cooldown 8s...")
                 time.sleep(8)
-        
         status_box.success("✅ Scan Complete!")
         st.rerun()
 else:
-    st.info("Sidebar: Search for a product to begin.")
+    st.info("Enter multiple SKUs or a manual URL in the sidebar.")
