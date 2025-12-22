@@ -11,111 +11,89 @@ from openai import OpenAI
 def get_watchlist():
     if "items" not in st.session_state or st.session_state["items"] is None:
         st.session_state["items"] = []
+    # Ensure new keys exist in old records
+    for item in st.session_state["items"]:
+        if "img_url" not in item: item["img_url"] = None
+        if "page_url" not in item: item["page_url"] = None
     return st.session_state["items"]
 
-if "browser_installed" not in st.session_state:
-    st.session_state["browser_installed"] = False
+# ... (Install playwright logic) ...
 
-def install_playwright_browsers():
-    if not st.session_state.get("browser_installed", False):
+# --- 2. CORE LOGIC ---
+def run_browser_watch(url, product_name):
+    if not st.secrets.get("SCRAPERAPI_KEY"): return "Error", None, None
+    
+    proxy_url = f"http://api.scraperapi.com?api_key={st.secrets.get('SCRAPERAPI_KEY')}&url={quote_plus(url)}&render=true&country_code=au"
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
         try:
-            subprocess.run(["playwright", "install", "chromium"], check=True)
-            st.session_state["browser_installed"] = True
-        except Exception: pass
+            page.goto(proxy_url, timeout=90000, wait_until="networkidle")
+            time.sleep(5) 
+            
+            # 1. Capture Full Page Snapshot
+            page_path = f"page_{os.getpid()}.png"
+            page.screenshot(path=page_path)
+            
+            # 2. Extract Price (using vision as before)
+            price = analyze_with_vision(page_path, product_name)
+            
+            # 3. Create a Thumbnail / "Product Picture"
+            # We crop the center-top of the page where product images usually are
+            thumb_path = f"thumb_{os.getpid()}.png"
+            with Image.open(page_path) as img:
+                # Simple crop: Top-center area (400x400)
+                w, h = img.size
+                thumb = img.crop((w/4, 100, 3*w/4, 500)) 
+                thumb.save(thumb_path)
 
-# --- 2. API CLIENTS ---
-SAPI_KEY = st.secrets.get("SCRAPERAPI_KEY") 
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY"))
+            # Convert images to Base64 so Streamlit can show them in the table
+            def to_b64(path):
+                with open(path, "rb") as f:
+                    return f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
+            
+            img_b64 = to_b64(thumb_path)
+            page_b64 = to_b64(page_path)
 
-# --- 3. HELPER LOGIC ---
-def get_store_name(url):
-    try: return urlparse(url).netloc.replace("www.", "")
-    except: return "Store"
+            # Cleanup
+            if os.path.exists(page_path): os.remove(page_path)
+            if os.path.exists(thumb_path): os.remove(thumb_path)
+            
+            return price, img_b64, page_b64
+        except:
+            return "Timeout", None, None
+        finally:
+            browser.close()
 
-# ... (Include analyze_with_vision and run_browser_watch from previous steps) ...
-
-# --- 4. UI SETUP ---
-st.set_page_config(page_title="Price Watch Pro", layout="wide")
-if not st.session_state.get("browser_installed"): install_playwright_browsers()
-
-st.title("🛒 AI Price Watcher")
-
-with st.sidebar:
-    st.header("Search Settings")
-    with st.form("search_form"):
-        bulk_input = st.text_area("SKUs (comma separated)")
-        exclude_domains = st.text_input("Exclude Domains")
-        is_worldwide = st.checkbox("Worldwide Search")
-        submit_button = st.form_submit_button("Add to List")
-
-    if submit_button:
-        # Search and filter logic goes here...
-        st.rerun()
-
-    st.divider()
-    # NEW: Dedicated Clear All function in Sidebar
-    if st.button("🗑️ Clear All Search Records", use_container_width=True):
-        st.session_state["items"] = []
-        st.success("All records cleared!")
-        st.rerun()
-
-# --- 5. RESULTS TABLE ---
+# --- 3. UI TABLE ---
 watchlist = get_watchlist()
 
 if watchlist:
     df = pd.DataFrame(watchlist)
     df.insert(0, "Seq", range(1, len(df) + 1))
-    df['Store'] = df['url'].apply(get_store_name)
-
-    # UI Metrics
-    col1, col2 = st.columns(2)
-    col1.metric("Total Tracked", len(df))
-    selected_placeholder = col2.empty() 
-
-    st.write("### Watchlist")
     
-    # Table with Selection
-    selection_event = st.dataframe(
-        df[["Seq", "sku", "price", "last_updated", "Store"]],
+    st.dataframe(
+        df[["Seq", "img_url", "sku", "price", "last_updated", "page_url"]],
         use_container_width=True,
         hide_index=True,
         on_select="rerun",
         selection_mode="multi-row",
         column_config={
-            "Seq": st.column_config.NumberColumn("Seq", width="small", format="%d"),
+            "Seq": st.column_config.NumberColumn("Seq", width="small"),
+            "img_url": st.column_config.ImageColumn("Product", width="small"),
+            "page_url": st.column_config.ImageColumn("Page Shot", width="medium"),
+            "sku": "Product Name",
+            "price": "Price",
         }
     )
 
-    selected_rows = selection_event.selection.rows
-    selected_placeholder.metric("Selected Rows", len(selected_rows))
-
-    # --- ACTION BUTTONS ROW ---
-    btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 1.5])
-
-    with btn_col1:
-        if st.button("🚀 Run Scan on Selected", use_container_width=True):
-            if selected_rows:
-                # ... (Existing Scan Loop with AEDT Time) ...
-                st.rerun()
-
-    with btn_col2:
-        if selected_rows:
-            # Export CSV logic
-            export_df = df.iloc[selected_rows][["Seq", "sku", "price", "last_updated", "Store", "url"]]
-            csv = export_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Export CSV", data=csv, file_name="prices.csv", mime='text/csv', use_container_width=True)
-        else:
-            st.button("📥 Export (Select Items)", disabled=True, use_container_width=True)
-
-    with btn_col3:
-        # NEW: Remove Selected function
-        if st.button("❌ Remove Selected", use_container_width=True):
-            if selected_rows:
-                # Remove rows by filtering out the selected indices
-                st.session_state["items"] = [i for j, i in enumerate(st.session_state["items"]) if j not in selected_rows]
-                st.rerun()
-            else:
-                st.warning("Select items to remove.")
-
-else:
-    st.info("Watchlist is empty. Search for SKUs in the sidebar.")
+    if st.button("🚀 Run Deep Scan on Selected"):
+        selected_rows = st.session_state.get("df_selection", {}).get("rows", [])
+        for idx in selected_rows:
+            p, img, pg = run_browser_watch(watchlist[idx]['url'], watchlist[idx]['sku'])
+            st.session_state["items"][idx].update({
+                "price": p, "img_url": img, "page_url": pg, 
+                "last_updated": (datetime.utcnow() + timedelta(hours=11)).strftime("%H:%M")
+            })
+        st.rerun()
