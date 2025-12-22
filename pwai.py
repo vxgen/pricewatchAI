@@ -2,98 +2,97 @@ import streamlit as st
 import pandas as pd
 import base64
 import os
-import re
+import requests
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
 from openai import OpenAI
 
-# Initialize OpenAI Client
-# Ensure you have your OPENAI_API_KEY set in your environment variables
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY") or "your-key-here")
+# Initialize Clients
+# Add your keys to Streamlit Secrets or Environment Variables
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY")
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY")
+GOOGLE_CX = st.secrets.get("GOOGLE_CX")
 
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+client = OpenAI(api_key=OPENAI_KEY)
 
-def analyze_price_with_vision(screenshot_path, product_name):
-    """Requirement #5: Use Vision LLM to extract price from screenshot."""
-    base64_image = encode_image(screenshot_path)
+def google_search_api(query):
+    """Requirement #3: Conduct Google search for product links using official API."""
+    url = f"https://www.googleapis.com/customsearch/v1?key={GOOGLE_API_KEY}&cx={GOOGLE_CX}&q={query}"
+    response = requests.get(url).json()
+    items = response.get("items", [])
+    # Return the first 3 relevant links
+    return [item['link'] for item in items[:3]]
+
+def analyze_with_vision(image_path, product_name):
+    """Requirement #5: Vision-based price analysis."""
+    with open(image_path, "rb") as f:
+        base64_img = base64.b64encode(f.read()).decode('utf-8')
     
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Find the current sale price for '{product_name}' in this image. Return only the price (e.g., $99.99). If not found, return 'N/A'."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
-                ],
-            }
-        ],
-        max_tokens=50
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Extract the current price for {product_name}. Return ONLY the number (e.g. 49.99)."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}}
+            ]
+        }]
     )
     return response.choices[0].message.content
 
-def get_screenshot_and_price(url, product_name=None, search_mode=False):
-    """Requirement #5 & #6: Browser automation with Vision Fallback."""
+def run_browser_watch(url, product_name):
+    """Requirement #5 & #6: Automated navigation and screenshot fallback."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        page = context.new_page()
+        page = browser.new_page()
         stealth_sync(page)
         
         try:
-            page.goto(url, wait_until="networkidle", timeout=60000)
+            page.goto(url, wait_until="networkidle", timeout=30000)
             
-            # Requirement #6: Site-specific search if blocked or incorrect page
-            if search_mode and product_name:
-                # Try to find common search selectors
-                search_selectors = ['input[name="q"]', 'input[type="search"]', 'input[placeholder*="Search"]']
-                for selector in search_selectors:
-                    if page.locator(selector).count() > 0:
-                        page.fill(selector, product_name)
-                        page.press(selector, "Enter")
-                        page.wait_for_load_state("networkidle")
-                        break
+            # Requirement #6: Fallback to internal search if landing page is generic
+            # (Checks for common search input selectors)
+            search_input = page.locator('input[type="search"], input[name="q"]').first
+            if search_input.is_visible():
+                search_input.fill(product_name)
+                search_input.press("Enter")
+                page.wait_for_load_state("networkidle")
 
-            screenshot_path = f"capture_{os.getpid()}.png"
-            page.screenshot(path=screenshot_path, full_page=False)
-            
-            # Use Vision Analysis
-            price = analyze_price_with_vision(screenshot_path, product_name)
-            
-            if os.path.exists(screenshot_path):
-                os.remove(screenshot_path)
-                
-            return price, page.url
+            # Requirement #5: Screenshot analysis
+            path = f"snap_{os.getpid()}.png"
+            page.screenshot(path=path)
+            price = analyze_with_vision(path, product_name)
+            os.remove(path)
+            return price
         except Exception as e:
-            return f"Error: {str(e)}", url
+            return f"Error: {str(e)}"
         finally:
             browser.close()
 
-# --- STREAMLIT DASHBOARD ---
-st.set_page_config(page_title="AI Price Watcher", layout="wide")
-st.title("👁️ AI Vision Price Watcher")
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Pro Price Watcher", layout="wide")
+st.title("🛒 AI-Powered Price Comparison")
 
 
 
+# Requirements #1 & #2
 with st.sidebar:
-    st.header("Add Product")
-    sku = st.text_input("SKU / Keywords")
-    target_url = st.text_input("Store URL (Optional)")
-    if st.button("Add to Watchlist"):
-        if "watchlist" not in st.session_state:
-            st.session_state.watchlist = []
-        # If no URL, we'd normally call a search function here
-        st.session_state.watchlist.append({"name": sku, "url": target_url})
-
-if "watchlist" in st.session_state:
-    if st.button("🚀 Run Price Comparison"):
-        results = []
-        for item in st.session_state.watchlist:
-            with st.spinner(f"Analyzing {item['name']}..."):
-                price, final_url = get_screenshot_and_price(item['url'], item['name'], search_mode=True)
-                results.append({"Product": item['name'], "Price": price, "URL": final_url})
+    sku = st.text_input("Product Name / SKU")
+    manual_url = st.text_input("Manual Link (Optional)")
+    if st.button("Add Product"):
+        if "items" not in st.session_state: st.session_state.items = []
         
-        # Requirement #4: Comparison Table
+        # Requirement #3: Align search if no manual link
+        links = [manual_url] if manual_url else google_search_api(sku)
+        for link in links:
+            st.session_state.items.append({"sku": sku, "url": link})
+
+# Requirement #4: Comparison Table
+if "items" in st.session_state:
+    if st.button("Update Price Comparison"):
+        results = []
+        for entry in st.session_state.items:
+            price = run_browser_watch(entry['url'], entry['sku'])
+            results.append({"SKU": entry['sku'], "Price": price, "URL": entry['url']})
+        
         st.table(pd.DataFrame(results))
