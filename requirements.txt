@@ -1,0 +1,7 @@
+streamlit
+playwright
+playwright-stealth
+openai
+easyocr
+pandas
+pillow
