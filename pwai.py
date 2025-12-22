@@ -32,7 +32,7 @@ def get_store_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return "Store"
 
-# ... (Include analyze_with_vision and run_browser_watch from previous versions) ...
+# ... (Include analyze_with_vision and run_browser_watch from previous steps) ...
 
 # --- 4. UI SETUP ---
 st.set_page_config(page_title="Price Watch Pro", layout="wide")
@@ -49,11 +49,14 @@ with st.sidebar:
         submit_button = st.form_submit_button("Add to List")
 
     if submit_button:
-        # Search logic integration here...
+        # Search and filter logic goes here...
         st.rerun()
 
-    if st.button("🗑️ Clear All"):
+    st.divider()
+    # NEW: Dedicated Clear All function in Sidebar
+    if st.button("🗑️ Clear All Search Records", use_container_width=True):
         st.session_state["items"] = []
+        st.success("All records cleared!")
         st.rerun()
 
 # --- 5. RESULTS TABLE ---
@@ -65,13 +68,13 @@ if watchlist:
     df['Store'] = df['url'].apply(get_store_name)
 
     # UI Metrics
-    col1, col2, col3 = st.columns([2, 2, 2])
-    col1.metric("Total Results", len(df))
+    col1, col2 = st.columns(2)
+    col1.metric("Total Tracked", len(df))
     selected_placeholder = col2.empty() 
 
     st.write("### Watchlist")
     
-    # Checkbox Selection
+    # Table with Selection
     selection_event = st.dataframe(
         df[["Seq", "sku", "price", "last_updated", "Store"]],
         use_container_width=True,
@@ -86,32 +89,33 @@ if watchlist:
     selected_rows = selection_event.selection.rows
     selected_placeholder.metric("Selected Rows", len(selected_rows))
 
-    # Action Buttons Row
-    btn_col1, btn_col2, _ = st.columns([1, 1, 2])
+    # --- ACTION BUTTONS ROW ---
+    btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 1.5])
 
     with btn_col1:
-        if st.button("🚀 Run Scan on Selected"):
+        if st.button("🚀 Run Scan on Selected", use_container_width=True):
             if selected_rows:
-                # ... (Execution loop from previous version) ...
+                # ... (Existing Scan Loop with AEDT Time) ...
                 st.rerun()
 
-    # --- NEW: EXPORT FUNCTION ---
     with btn_col2:
         if selected_rows:
-            # Filter the dataframe to only include selected rows
+            # Export CSV logic
             export_df = df.iloc[selected_rows][["Seq", "sku", "price", "last_updated", "Store", "url"]]
-            
-            # Convert to CSV
             csv = export_df.to_csv(index=False).encode('utf-8')
-            
-            st.download_button(
-                label="📥 Export Selected to CSV",
-                data=csv,
-                file_name=f"price_data_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime='text/csv',
-            )
+            st.download_button("📥 Export CSV", data=csv, file_name="prices.csv", mime='text/csv', use_container_width=True)
         else:
-            st.button("📥 Export (Select items first)", disabled=True)
+            st.button("📥 Export (Select Items)", disabled=True, use_container_width=True)
+
+    with btn_col3:
+        # NEW: Remove Selected function
+        if st.button("❌ Remove Selected", use_container_width=True):
+            if selected_rows:
+                # Remove rows by filtering out the selected indices
+                st.session_state["items"] = [i for j, i in enumerate(st.session_state["items"]) if j not in selected_rows]
+                st.rerun()
+            else:
+                st.warning("Select items to remove.")
 
 else:
-    st.info("Watchlist is empty.")
+    st.info("Watchlist is empty. Search for SKUs in the sidebar.")
