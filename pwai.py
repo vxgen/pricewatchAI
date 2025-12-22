@@ -92,18 +92,32 @@ def run_browser_watch(url, product_name, search_mode=False):
 
 # --- 4. STREAMLIT UI ---
 st.set_page_config(page_title="Pro Price Watcher", layout="wide")
+
+# INITIALIZE WATCHLIST AT THE VERY START OF THE UI SECTION
+if "items" not in st.session_state:
+    st.session_state.items = []
+
 st.title("🛒 AI-Powered Price Watcher v2.0")
 
 with st.sidebar:
     st.header("Add Product")
-    sku = st.text_input("Product Name / SKU")
-    manual_url = st.text_input("Target URL (Optional)")
+    sku_input = st.text_input("Product Name / SKU", key="sku_input") # Added unique key
+    manual_url = st.text_input("Target URL (Optional)", key="url_input")
+    
     if st.button("Add to Watchlist"):
-        if "items" not in st.session_state: st.session_state.items = []
-        links = [manual_url] if manual_url else google_search_api(sku)
-        for link in links:
-            st.session_state.items.append({"sku": sku, "url": link})
-        st.success("Product Added!")
+        if sku_input:
+            with st.spinner("Searching for links..."):
+                links = [manual_url] if manual_url else google_search_api(sku_input)
+                
+                if links:
+                    for link in links:
+                        # Double-check initialization right before appending
+                        st.session_state.items.append({"sku": sku_input, "url": link})
+                    st.success(f"Added {sku_input} to watchlist!")
+                else:
+                    st.warning("No links found. Please provide a manual URL.")
+        else:
+            st.error("Please enter a SKU or Product Name.")
 
 # Requirement #4: Table
 if "items" in st.session_state:
@@ -114,3 +128,4 @@ if "items" in st.session_state:
                 price = run_browser_watch(entry['url'], entry['sku'], search_mode=True)
                 results.append({"SKU": entry['sku'], "Price": price, "Source": entry['url']})
         st.table(pd.DataFrame(results))
+
