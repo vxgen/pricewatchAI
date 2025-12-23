@@ -22,20 +22,24 @@ def get_gspread_client():
 def load_user_db():
     try:
         client = get_gspread_client()
-        # Targeting your new sheet name
         sheet = client.open("PriceWatchAI").worksheet("users")
         
-        # Self-Healing: Check/Fix headers
-        headers = sheet.row_values(1)
+        all_values = sheet.get_all_values()
         expected = ['username', 'password', 'is_active']
-        if headers != expected:
+        
+        # Self-Healing: If sheet is empty or headers are wrong, fix it
+        if not all_values or all_values[0] != expected:
+            sheet.clear()
             sheet.insert_row(expected, 1)
             return sheet, pd.DataFrame(columns=expected)
 
+        if len(all_values) == 1:
+            return sheet, pd.DataFrame(columns=expected)
+            
         data = sheet.get_all_records()
         return sheet, pd.DataFrame(data)
     except Exception as e:
-        st.error(f"⚠️ Link Error: Ensure you shared the sheet with your Service Account email. Detail: {e}")
+        st.error(f"⚠️ Link Error: {e}")
         return None, pd.DataFrame()
 
 def check_login(u, p):
@@ -50,12 +54,16 @@ def check_login(u, p):
     return False, "Invalid username or password."
 
 def register_user(u, p):
-    sheet, df = load_user_db()
-    if sheet is None: return False, "Database connection failed."
-    if u in df['username'].astype(str).values:
+    res = load_user_db()
+    if res[0] is None: return False, "Database connection failed."
+    sheet, df = res
+    if not df.empty and u in df['username'].astype(str).values:
         return False, "Username already exists."
-    sheet.append_row([u, hash_password(p), "FALSE"])
-    return True, "Registration sent! Admin must approve in Google Sheets."
+    try:
+        sheet.append_row([u, hash_password(p), "FALSE"])
+        return True, "Registration sent! Admin must approve in Google Sheets."
+    except Exception as e:
+        return False, f"Error writing to sheet: {e}"
 
 # --- 2. CORE APP INITIALIZATION ---
 def get_watchlist():
@@ -86,7 +94,7 @@ def google_search_paginated(query, start_index=1, worldwide=False, blacklist=[])
     cx = st.secrets.get("GOOGLE_CX")
     if not api_key or not cx: return []
     all_links = []
-    base_url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={cx}&q={query}&start={start_index}"
+    base_url = f"https://www.googleapis.com/customsearch/v1?key={api_key}&cx={cx}&q={quote_plus(query)}&start={start_index}"
     if not worldwide: base_url += "&cr=countryAU"
     try:
         response = requests.get(base_url, timeout=10)
@@ -170,7 +178,7 @@ if not st.session_state["logged_in"]:
                     else: st.error(m)
     st.stop()
 
-# --- 6. MAIN APP LOGIC ---
+# --- 6. MAIN APP LOGIC (LOADED ONLY AFTER LOGIN) ---
 st.sidebar.success(f"User: {st.session_state['user']}")
 if st.sidebar.button("Logout"):
     st.session_state["logged_in"] = False
