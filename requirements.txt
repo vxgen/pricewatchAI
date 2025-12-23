@@ -1,7 +1,7 @@
+streamlit
+pandas
 gspread
 google-auth
-pandas
-streamlit
 playwright
 Pillow
 openai
