@@ -55,7 +55,7 @@ def main_app():
         st.session_state['logged_in'] = False
         st.rerun()
         
-    menu = st.sidebar.radio("Navigate", ["Product Check", "Upload & Mapping", "Settings (Schema)"])
+    menu = st.sidebar.radio("Navigate", ["Product Check", "Upload & Mapping"])
     
     # 1. PRODUCT CHECK
     if menu == "Product Check":
@@ -69,6 +69,7 @@ def main_app():
                     name_display = row.get("Product Name", row.get("name", "Item"))
                     with st.expander(f"{name_display}"):
                         for col in results.columns:
+                            # Hide system columns or price initially
                             if col not in ['category', 'last_updated', 'Price', 'price']:
                                 st.write(f"**{col}:** {row[col]}")
                         
@@ -79,95 +80,110 @@ def main_app():
             else:
                 st.warning("No matches found.")
 
-    # 2. SETTINGS (Schema)
-    elif menu == "Settings (Schema)":
-        st.header("⚙️ Configure Target Format")
-        st.info("Define the standard columns for your database and output files.")
-        
-        current_schema = dm.get_schema()
-        st.write("Current Target Columns:", current_schema)
-        
-        c1, c2 = st.columns(2)
-        new_col = c1.text_input("Add New Column Name")
-        if c1.button("Add"):
-            if new_col:
-                dm.add_schema_column(new_col)
-                st.success(f"Added {new_col}")
-                st.rerun()
-        
-        del_col = c2.selectbox("Delete Column", [""] + current_schema)
-        if c2.button("Delete"):
-            if del_col:
-                dm.delete_schema_column(del_col)
-                st.success(f"Deleted {del_col}")
-                st.rerun()
-
-    # 3. UPLOAD & MAPPING
+    # 2. UPLOAD & MAPPING
     elif menu == "Upload & Mapping":
-        st.header("📂 File Upload & Auto-Map")
+        st.header("📂 File Upload & Schema Config")
         
-        # --- FIXED: Added Category Creation Back ---
-        c_sel, c_add = st.columns([2, 1])
+        # --- TOP SECTION: CATEGORIES & SCHEMA MANAGEMENT ---
+        c_left, c_right = st.columns([1, 1])
         
-        cats = dm.get_categories()
-        cat_sel = c_sel.selectbox("Select Category", cats)
-        
-        new_cat = c_add.text_input("Or Add New Category")
-        if c_add.button("Add Category"):
-            if new_cat:
-                dm.add_category(new_cat, st.session_state['user'])
-                st.success(f"Added '{new_cat}'")
-                st.rerun()
-        # -------------------------------------------
+        with c_left:
+            st.subheader("1. Category Selection")
+            cats = dm.get_categories()
+            cat_sel = st.selectbox("Select Category", cats)
+            
+            c_new, c_btn = st.columns([2,1])
+            new_cat = c_new.text_input("New Category Name")
+            if c_btn.button("Add Cat"):
+                if new_cat:
+                    dm.add_category(new_cat, st.session_state['user'])
+                    st.success(f"Added '{new_cat}'")
+                    st.rerun()
 
+        with c_right:
+            st.subheader("2. Target Column Setup")
+            with st.expander("Manage 'Map To' Columns (Add/Edit/Delete)", expanded=False):
+                current_schema = dm.get_schema()
+                st.write(f"Current Target Columns: {current_schema}")
+                
+                # Add New Target Column
+                c_add_col, c_add_btn = st.columns([2,1])
+                new_col_name = c_add_col.text_input("Add Target Column")
+                if c_add_btn.button("Add"):
+                    if new_col_name:
+                        dm.add_schema_column(new_col_name)
+                        st.success("Column Added")
+                        st.rerun()
+                
+                # Delete Target Column
+                c_del_col, c_del_btn = st.columns([2,1])
+                del_col_name = c_del_col.selectbox("Delete Column", ["Select..."] + current_schema)
+                if c_del_btn.button("Delete"):
+                    if del_col_name != "Select...":
+                        dm.delete_schema_column(del_col_name)
+                        st.success("Column Deleted")
+                        st.rerun()
+
+        st.divider()
+
+        # --- BOTTOM SECTION: UPLOAD & MAP ---
         target_columns = dm.get_schema()
         if not target_columns:
-            st.error("Please configure columns in 'Settings' first!")
+            st.error("You have no Target Columns defined. Please add them in section 2 above.")
             return
 
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True)
         
         if files:
             for file in files:
-                st.markdown(f"--- \n### Processing: {file.name}")
+                st.markdown(f"### Processing: {file.name}")
                 if file.name.endswith('csv'): df = pd.read_csv(file)
                 else: df = pd.read_excel(file)
                 
                 st.write("Preview:", df.head(3))
                 
-                st.subheader("Map Columns")
+                st.info("Map the columns from your file (Dropdown) to your Target Columns (Bold Label)")
+                
                 mapping = {}
                 cols = st.columns(3)
                 
-                file_cols = list(df.columns)
+                # Available file columns + a "Skip" option
+                file_cols = ["(Skip)"] + list(df.columns)
                 
                 for i, target_col in enumerate(target_columns):
-                    default_idx = 0
-                    if target_col in file_cols:
+                    # SMART INDEX LOGIC
+                    # If target matches file column exactly, select it. 
+                    # If NOT, select index 0 ("Skip").
+                    default_idx = 0 
+                    if target_col in df.columns:
                         default_idx = file_cols.index(target_col)
                     
                     with cols[i % 3]:
                         selected_col = st.selectbox(
-                            f"Map to '{target_col}'", 
+                            f"Target: **{target_col}**", 
                             file_cols, 
                             index=default_idx,
                             key=f"{file.name}_{target_col}"
                         )
-                        mapping[target_col] = selected_col
+                        if selected_col != "(Skip)":
+                            mapping[target_col] = selected_col
                 
                 if st.button(f"Format & Save {file.name}", key=f"btn_{file.name}"):
-                    new_data = {}
-                    for target, source in mapping.items():
-                        new_data[target] = df[source]
-                    
-                    clean_df = pd.DataFrame(new_data)
-                    dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
-                    
-                    output = BytesIO()
-                    with pd.ExcelWriter(output) as writer:
-                        clean_df.to_excel(writer, index=False)
-                    st.download_button("Download Formatted", output.getvalue(), f"fmt_{file.name}.xlsx")
-                    st.success("Saved & Ready")
+                    if not mapping:
+                        st.error("Please map at least one column.")
+                    else:
+                        new_data = {}
+                        for target, source in mapping.items():
+                            new_data[target] = df[source]
+                        
+                        clean_df = pd.DataFrame(new_data)
+                        dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
+                        
+                        output = BytesIO()
+                        with pd.ExcelWriter(output) as writer:
+                            clean_df.to_excel(writer, index=False)
+                        st.download_button("Download Formatted", output.getvalue(), f"fmt_{file.name}.xlsx")
+                        st.success("Saved & Ready")
 
 if st.session_state['logged_in']:
     main_app()
