@@ -11,7 +11,11 @@ def hash_pw(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def check_login(username, password):
-    users = dm.get_users()
+    try:
+        users = dm.get_users()
+    except Exception as e:
+        return False, f"DB Connection Error: {str(e)}"
+        
     if users.empty: return False, "No users in DB"
     hashed = hash_pw(password)
     user = users[(users['username'] == username) & (users['password'] == hashed)]
@@ -55,7 +59,8 @@ def main_app():
         st.session_state['logged_in'] = False
         st.rerun()
         
-    menu = st.sidebar.radio("Navigate", ["Product Check", "Upload & Mapping"])
+    # --- RESTORED: Data Update in Menu ---
+    menu = st.sidebar.radio("Navigate", ["Product Check", "Upload & Mapping", "Data Update"])
     
     # 1. PRODUCT CHECK
     if menu == "Product Check":
@@ -69,7 +74,6 @@ def main_app():
                     name_display = row.get("Product Name", row.get("name", "Item"))
                     with st.expander(f"{name_display}"):
                         for col in results.columns:
-                            # Hide system columns or price initially
                             if col not in ['category', 'last_updated', 'Price', 'price']:
                                 st.write(f"**{col}:** {row[col]}")
                         
@@ -84,9 +88,8 @@ def main_app():
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
         
-        # --- TOP SECTION: CATEGORIES & SCHEMA MANAGEMENT ---
+        # Top Section: Categories & Schema
         c_left, c_right = st.columns([1, 1])
-        
         with c_left:
             st.subheader("1. Category Selection")
             cats = dm.get_categories()
@@ -102,11 +105,10 @@ def main_app():
 
         with c_right:
             st.subheader("2. Target Column Setup")
-            with st.expander("Manage 'Map To' Columns (Add/Edit/Delete)", expanded=False):
+            with st.expander("Manage Target Columns"):
                 current_schema = dm.get_schema()
                 st.write(f"Current Target Columns: {current_schema}")
                 
-                # Add New Target Column
                 c_add_col, c_add_btn = st.columns([2,1])
                 new_col_name = c_add_col.text_input("Add Target Column")
                 if c_add_btn.button("Add"):
@@ -115,7 +117,6 @@ def main_app():
                         st.success("Column Added")
                         st.rerun()
                 
-                # Delete Target Column
                 c_del_col, c_del_btn = st.columns([2,1])
                 del_col_name = c_del_col.selectbox("Delete Column", ["Select..."] + current_schema)
                 if c_del_btn.button("Delete"):
@@ -123,37 +124,26 @@ def main_app():
                         dm.delete_schema_column(del_col_name)
                         st.success("Column Deleted")
                         st.rerun()
-
         st.divider()
 
-        # --- BOTTOM SECTION: UPLOAD & MAP ---
+        # Upload & Map
         target_columns = dm.get_schema()
-        if not target_columns:
-            st.error("You have no Target Columns defined. Please add them in section 2 above.")
-            return
-
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True)
         
         if files:
             for file in files:
-                st.markdown(f"### Processing: {file.name}")
+                st.markdown(f"### File: {file.name}")
                 if file.name.endswith('csv'): df = pd.read_csv(file)
                 else: df = pd.read_excel(file)
                 
                 st.write("Preview:", df.head(3))
                 
-                st.info("Map the columns from your file (Dropdown) to your Target Columns (Bold Label)")
-                
+                # Mapping
                 mapping = {}
                 cols = st.columns(3)
-                
-                # Available file columns + a "Skip" option
                 file_cols = ["(Skip)"] + list(df.columns)
                 
                 for i, target_col in enumerate(target_columns):
-                    # SMART INDEX LOGIC
-                    # If target matches file column exactly, select it. 
-                    # If NOT, select index 0 ("Skip").
                     default_idx = 0 
                     if target_col in df.columns:
                         default_idx = file_cols.index(target_col)
@@ -168,22 +158,97 @@ def main_app():
                         if selected_col != "(Skip)":
                             mapping[target_col] = selected_col
                 
-                if st.button(f"Format & Save {file.name}", key=f"btn_{file.name}"):
+                # --- SPLIT BUTTONS LOGIC ---
+                st.write("---")
+                col_btn1, col_btn2 = st.columns(2)
+                
+                # Button 1: Generate Preview & Download
+                if col_btn1.button(f"Generate Preview & Download ({file.name})"):
                     if not mapping:
                         st.error("Please map at least one column.")
                     else:
                         new_data = {}
                         for target, source in mapping.items():
                             new_data[target] = df[source]
-                        
                         clean_df = pd.DataFrame(new_data)
-                        dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
                         
-                        output = BytesIO()
-                        with pd.ExcelWriter(output) as writer:
-                            clean_df.to_excel(writer, index=False)
-                        st.download_button("Download Formatted", output.getvalue(), f"fmt_{file.name}.xlsx")
-                        st.success("Saved & Ready")
+                        # Store in session state so we can download/save
+                        st.session_state[f'clean_{file.name}'] = clean_df
+                        st.success("File Processed! See below.")
+
+                # If processed data exists, show actions
+                if f'clean_{file.name}' in st.session_state:
+                    clean_df = st.session_state[f'clean_{file.name}']
+                    st.dataframe(clean_df.head())
+                    
+                    # ACTION A: Download
+                    output = BytesIO()
+                    with pd.ExcelWriter(output) as writer:
+                        clean_df.to_excel(writer, index=False)
+                    
+                    st.download_button(
+                        label="⬇️ Download Excel File",
+                        data=output.getvalue(),
+                        file_name=f"formatted_{file.name}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    
+                    # ACTION B: Save to DB
+                    if st.button(f"☁️ Save to Google Sheet ({file.name})"):
+                        dm.save_products_dynamic(clean_df, cat_sel, st.session_state['user'])
+                        st.success("Successfully Saved to Database!")
+                        # Optional: Clear state to prevent double save
+                        del st.session_state[f'clean_{file.name}']
+
+    # 3. DATA UPDATE (Restored)
+    elif menu == "Data Update":
+        st.header("🔄 Update Existing Category")
+        st.info("Upload a new file to identify changes, new items, and EOL items.")
+        
+        cats = dm.get_categories()
+        cat_sel = st.selectbox("Category to Update", cats)
+        
+        up_file = st.file_uploader("Upload New Pricebook")
+        
+        if up_file:
+            if up_file.name.endswith('csv'): df = pd.read_csv(up_file)
+            else: df = pd.read_excel(up_file)
+            
+            target_columns = dm.get_schema()
+            
+            # Simple Mapping for Update
+            st.subheader("Map Columns for Update")
+            mapping = {}
+            cols = st.columns(3)
+            file_cols = ["(Skip)"] + list(df.columns)
+            
+            for i, target_col in enumerate(target_columns):
+                default_idx = 0 
+                if target_col in df.columns:
+                    default_idx = file_cols.index(target_col)
+                with cols[i % 3]:
+                    selected_col = st.selectbox(
+                        f"Target: **{target_col}**", file_cols, index=default_idx, key=f"up_{target_col}")
+                    if selected_col != "(Skip)":
+                        mapping[target_col] = selected_col
+
+            # Select Key Column
+            key_col = st.selectbox("Which target column is the Unique ID (e.g., Product Name)?", target_columns)
+
+            if st.button("Analyze Differences & Update"):
+                new_data = {}
+                for target, source in mapping.items():
+                    new_data[target] = df[source]
+                clean_df = pd.DataFrame(new_data)
+                
+                if key_col not in clean_df.columns:
+                    st.error(f"You must map the Key Column: {key_col}")
+                else:
+                    res = dm.update_products_dynamic(clean_df, cat_sel, st.session_state['user'], key_col)
+                    if "error" in res:
+                        st.error(res["error"])
+                    else:
+                        st.success(f"Update Complete! New Items: {res['new']}, Marked EOL: {res['eol']}")
 
 if st.session_state['logged_in']:
     main_app()
