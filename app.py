@@ -87,120 +87,7 @@ def main_app():
         
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
         
-    # --- TAB 1: PREDICTIVE SEARCH (FIXED) ---
-        with tab_search:
-            # 1. Refresh Button
-            if st.button("Refresh Database"):
-                dm.get_all_products_df.clear()
-                st.success("Database refreshed!")
-
-            # 2. Get Data
-            df = dm.get_all_products_df()
-            
-            if not df.empty:
-                # --- STEP A: ROBUST COLUMN DETECTION ---
-                # Problem: Your file has empty columns (like 'product_name') shadowing real ones.
-                # Fix: We only select columns that actually contain data.
-                
-                def col_has_data(dataframe, col_name):
-                    """Returns True if the column has at least one non-empty string."""
-                    if col_name not in dataframe.columns: return False
-                    # Check for non-null and non-empty strings
-                    return dataframe[col_name].astype(str).str.strip().ne('').any()
-
-                # 1. Identify all columns that actually have data
-                valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
-                
-                # 2. Find the best "Name" column from the VALID columns only
-                name_col = None
-                
-                # Priority 1: Valid column containing "product" and "name" (e.g., "Product Name")
-                for col in valid_data_cols:
-                    if 'product' in col.lower() and 'name' in col.lower():
-                        name_col = col
-                        break
-                
-                # Priority 2: Valid column containing "model"
-                if not name_col:
-                    for col in valid_data_cols:
-                        if 'model' in col.lower():
-                            name_col = col
-                            break
-
-                # Priority 3: Fallback to the first valid text column (if nothing else matches)
-                if not name_col and valid_data_cols:
-                    name_col = valid_data_cols[0]
-                
-                # Safety check: If still None (empty file?), use the first column header
-                if not name_col: name_col = df.columns[0]
-
-
-                # --- STEP B: CREATE CLEAN SEARCH OPTIONS ---
-                # We create a new temporary dataframe just for the search logic
-                search_df = df.copy()
-                
-                # Clean Label Function: "Product Name | SKU"
-                def make_label(row):
-                    # Get the main name
-                    main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                    
-                    # Create the base label
-                    label = main_name.strip()
-                    if not label: return None # Skip empty rows entirely
-
-                    # Try to append SKU if it exists (and is different from name)
-                    sku_c = next((c for c in valid_data_cols if 'sku' in c.lower() and c != name_col), None)
-                    if sku_c:
-                        val = str(row[sku_c]).strip()
-                        if val and val.lower() != 'nan':
-                            label += f" | {val}"
-                            
-                    return label
-
-                # Apply label creation
-                search_df['Search_Label'] = search_df.apply(make_label, axis=1)
-                
-                # Drop None values (rows that had no name) and get unique sorted list
-                search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
-
-                # --- STEP C: THE WIDGET ---
-                selected_label = st.selectbox(
-                    label=f"Start typing to search ({name_col})...",
-                    options=search_options,
-                    index=None,
-                    placeholder="Type Product Name or SKU...",
-                    help="Predictive search filters as you type."
-                )
-                
-                st.divider()
-
-                # --- STEP D: DISPLAY RESULTS ---
-                if selected_label:
-                    # Find the row(s) that match the selected label
-                    results = search_df[search_df['Search_Label'] == selected_label]
-                    
-                    # Remove the helper column
-                    results = results.drop(columns=['Search_Label'])
-                    
-                    if not results.empty:
-                        for i, row in results.iterrows():
-                            # Card Title
-                            card_title = str(row[name_col])
-                            
-                            with st.expander(f"📦 {card_title}", expanded=True):
-                                # Display content
-                                for col in results.columns:
-                                    if 'price' not in col.lower() and 'cost' not in col.lower():
-                                        st.write(f"**{col}:** {row[col]}")
-                                
-                                # View Price Button
-                                price_cols = [c for c in df.columns if 'price' in c.lower() or 'cost' in c.lower()]
-                                if price_cols:
-                                    if st.button("View Price", key=f"btn_{i}"):
-                                        for p_col in price_cols:
-                                            st.metric(p_col, row[p_col])
-            else:
-                st.warning("Database is empty. Please upload a file in the Admin tab.")
+   
     # 2. UPLOAD & MAPPING
     elif menu == "Upload & Mapping":
         st.header("📂 File Upload & Schema Config")
@@ -371,6 +258,7 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
 
 
