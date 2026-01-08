@@ -73,7 +73,7 @@ def main_app():
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
  # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (FINAL REFINEMENT)
+    # 1. PRODUCT SEARCH & BROWSE (SINGLE BOX + TOGGLE PRICE)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -130,6 +130,7 @@ def main_app():
                     # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
+                    # Exclude noise from search string
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
@@ -152,44 +153,30 @@ def main_app():
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
+                    # Filter and Sort
+                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
-                    # --- STEP C: SEARCH INTERFACE (2-Step) ---
+                    # --- STEP C: SEARCH WIDGET (Single Box) ---
+                    c_bar, c_clear = st.columns([7, 1])
                     
-                    # 1. Layout: Search Bar + Clear Button
-                    c_search, c_clear = st.columns([6, 1])
-                    
-                    with c_search:
-                        # We use text_input as the trigger. 
-                        # This satisfies "No result if no value key-in" because the dropdown below won't exist yet.
-                        search_query = st.text_input(
-                            "Type keywords to find product:", 
-                            placeholder="e.g. MP275...",
-                            key="search_input"
+                    with c_bar:
+                        # 1. The Single Predictive Box
+                        selected_label = st.selectbox(
+                            label="Search Product",
+                            options=search_options,
+                            index=None, # Empty by default
+                            placeholder="Type Name, SKU or Specs to search...",
+                            label_visibility="collapsed",
+                            key="search_selectbox"
                         )
-                        
-                    with c_clear:
-                        st.write("") # Spacer to align button
-                        st.write("") 
-                        if st.button("Clear"):
-                            st.rerun() # Rerunning clears the text input since we didn't bind it to a persistent session state manually
 
-                    selected_label = None
-                    
-                    # 2. Only show the Predictive Dropdown IF text is typed
-                    if search_query:
-                        # Filter options based on the typed text (Case Insensitive)
-                        all_labels = search_df['Search_Label'].unique().tolist()
-                        matching_options = [opt for opt in all_labels if search_query.lower() in str(opt).lower()]
+                    with c_clear:
+                        # 2. Clear Button
+                        # This callback function clears the selectbox state
+                        def clear_search():
+                            st.session_state["search_selectbox"] = None
                         
-                        if matching_options:
-                            # Show matches in a selectbox
-                            selected_label = st.selectbox(
-                                f"⬇️ Found {len(matching_options)} match(es). Select one:",
-                                options=sorted(matching_options),
-                                index=0 
-                            )
-                        else:
-                            st.warning(f"No products found matching '{search_query}'")
+                        st.button("Clear", on_click=clear_search)
 
                     st.divider()
 
@@ -214,10 +201,10 @@ def main_app():
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
                                     
-                                    # Toggle Price (Hide/Show)
+                                    # Toggle Price (Show/Hide)
                                     if price_cols:
                                         st.markdown("---")
-                                        # Use a toggle instead of a button so you can hide it again
+                                        # Use toggle so user can hide it again
                                         show_price = st.toggle("Show Price 💰", key=f"toggle_{i}")
                                         
                                         if show_price:
@@ -436,4 +423,5 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
