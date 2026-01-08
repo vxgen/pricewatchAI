@@ -80,9 +80,8 @@ def main_app():
         
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
-    
-    # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE
+   # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE (OPTIMIZED)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -105,7 +104,6 @@ def main_app():
                 def col_has_data(dataframe, col_name):
                     if col_name not in dataframe.columns: return False
                     s = dataframe[col_name].astype(str).str.strip()
-                    # Check against common empty values
                     is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
                     return not is_empty.all()
 
@@ -131,53 +129,58 @@ def main_app():
                     # Priority 3: Fallback
                     if not name_col: name_col = valid_data_cols[0]
 
-                    # --- STEP B: BUILD "SEARCH EVERYTHING" LABEL ---
+                    # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # Define keywords to EXCLUDE from the search string (to keep it clean/private)
-                    # We exclude Price from the search string so it remains hidden until clicked.
-                    # We exclude Timestamps so the search result isn't messy.
-                    forbidden_in_search = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
-                                           'date', 'time', 'last_updated', 'timestamp']
+                    # 1. Define keywords to EXCLUDE from the search string completely.
+                    #    - We hide PRICE/COST for privacy.
+                    #    - We hide DATE/TIME for cleanliness.
+                    #    - We hide CATEGORY/CLASS to remove "Professional Monitors" noise.
+                    forbidden_in_search = [
+                        'price', 'cost', 'srp', 'msrp', 'rrp', 'margin',  # Privacy
+                        'date', 'time', 'last_updated', 'timestamp',      # Cleanliness
+                        'category', 'class', 'group', 'segment'           # Reduce visual noise
+                    ]
 
                     def make_search_label(row):
-                        # 1. Start with the Name (Most important)
+                        # Start with the Name (The most important part)
                         main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
                         label_parts = [main_name.strip()]
 
-                        # 2. Loop through other valid columns to append unique info
+                        # Loop through other valid columns to append unique info
                         for col in valid_data_cols:
                             # Skip the name column (already added)
                             if col == name_col: continue
                             
-                            # Skip Forbidden columns (Privacy & Cleanliness)
+                            # Skip Forbidden columns
                             if any(k in col.lower() for k in forbidden_in_search): continue
                             
                             val = str(row[col]).strip()
                             # Only add if it has real data
                             if val and val.lower() not in ['nan', 'none', '']:
-                                # Avoid adding duplicate info (e.g. if SKU is same as Name)
+                                # Clean up duplicates (if SKU is same as Name, don't repeat it)
                                 if val not in label_parts:
+                                    # Optional: Truncate very long descriptions to keep dropdown clean?
+                                    # For now, we keep it so you can search "IPS" or "100Hz"
                                     label_parts.append(val)
                         
-                        # 3. Join them cleanly
-                        # Result: "Monitor X | SKU123 | Black | 27 inch | IPS"
-                        full_label = " | ".join(filter(None, label_parts))
-                        return full_label
+                        # Join them cleanly with a pipe
+                        return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
                     
-                    # Filter out None and sort
+                    # Filter out None and sort alphabetically
                     search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
                     # --- STEP C: SEARCH WIDGET ---
-                    # Now that the label contains specs/color/etc, typing "Black" will find the product!
+                    # Uses index=None to ensure it's empty by default.
                     selected_label = st.selectbox(
-                        label=f"Start typing to search (Name, SKU, Specs, etc.)...",
+                        label="Product Search",
                         options=search_options,
                         index=None,
-                        placeholder="Type any detail (e.g. '27 inch' or 'IPS')...",
-                        help="You can search by Name, SKU, Category, or Specifications."
+                        placeholder="Type to search (Name, SKU, Specs)...",
+                        help="Start typing to filter. Prices are hidden until selected.",
+                        label_visibility="collapsed" # Hides the label for a cleaner look
                     )
                     
                     st.divider()
@@ -191,7 +194,7 @@ def main_app():
                             for i, row in results.iterrows():
                                 card_title = str(row[name_col])
                                 with st.expander(f"📦 {card_title}", expanded=True):
-                                    # Define hidden keywords for DISPLAY
+                                    # Define hidden keywords for DISPLAY (Strict Privacy)
                                     hidden_keywords = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
                                     
                                     all_cols = results.columns.tolist()
@@ -245,7 +248,6 @@ def main_app():
                         st.info(f"No data found for category: {cat_sel}")
                 else:
                     st.info("No product data available or 'category' column missing.")
-
     # =======================================================
     # 2. UPLOAD & MAPPING
     # =======================================================
@@ -420,3 +422,4 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
