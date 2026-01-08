@@ -97,41 +97,53 @@ def main_app():
             df = dm.get_all_products_df()
             
             if not df.empty:
-                # 2. Find the column that contains the "Name" (e.g., Product Name, Model, etc.)
-                # We prioritize columns with 'name', 'model', or 'item' in the header
+                # Determine a "Title Column" for the Display Card (preserves your old logic for display)
                 name_cols = [c for c in df.columns if 'name' in c.lower() or 'model' in c.lower() or 'item' in c.lower()]
-                
                 if name_cols:
-                    search_col = name_cols[0] # Use the best match found
+                    display_title_col = name_cols[0] 
                 else:
-                    search_col = df.columns[0] # Fallback to first column
+                    display_title_col = df.columns[0] 
 
-                # 3. Create List for Predictive Dropdown
-                # Convert to string and drop duplicates/empty
-                all_items = df[search_col].astype(str).unique().tolist()
-                all_items = sorted([x for x in all_items if x and x != 'nan'])
+                # --- NEW LOGIC: SEARCH ACROSS ALL VALUES ---
+                # We create a temporary copy to build the search string
+                search_df = df.copy()
                 
-                # 4. PREDICTIVE INPUT WIDGET
-                # "index=None" makes it empty by default
-                # As user types, Streamlit filters this list automatically!
-                selected_item = st.selectbox(
-                    f"Start typing to search ({search_col})...", 
-                    options=all_items,
+                # Combine ALL columns into one string per row (e.g. "MP275 | Monitor | $100")
+                search_df['Search_Helper'] = search_df.astype(str).agg(' | '.join, axis=1)
+                
+                # Get the unique search strings
+                all_search_options = search_df['Search_Helper'].unique().tolist()
+                
+                # PREDICTIVE INPUT WIDGET
+                # The options are now the full details, allowing you to type SKU, Name, or Category
+                selected_search_string = st.selectbox(
+                    label="Start typing to search (Name, SKU, Category, etc.)...", 
+                    options=all_search_options,
                     index=None,
-                    placeholder="Type product name..."
+                    placeholder="Type SKU or Name...",
+                    help="You can search by any value in the database."
                 )
                 
+                st.divider()
+
                 # 5. Display Result
-                if selected_item:
-                    # Filter DF by exact selection
-                    results = df[df[search_col].astype(str) == selected_item]
-                    # Clean display (hide empty columns)
+                if selected_search_string:
+                    # Filter the dataframe to find the row that matches the search string
+                    # We use the 'Search_Helper' column we created to match the selection
+                    results = search_df[search_df['Search_Helper'] == selected_search_string]
+                    
+                    # Remove the helper column before displaying so it looks clean
+                    results = results.drop(columns=['Search_Helper'])
+                    
+                    # Clean display (hide empty columns) - your existing function
                     results = clean_display_df(results)
                     
                     if not results.empty:
                         for i, row in results.iterrows():
-                            # Header of the card
-                            with st.expander(f"{row[search_col]}", expanded=True):
+                            # Header of the card (using the display_title_col we found earlier)
+                            card_title = str(row[display_title_col]) if display_title_col in row else "Product Details"
+                            
+                            with st.expander(f"📦 {card_title}", expanded=True):
                                 # Show all columns except price
                                 for col in results.columns:
                                     if 'price' not in col.lower() and 'cost' not in col.lower():
