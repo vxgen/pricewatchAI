@@ -73,7 +73,7 @@ def main_app():
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
 # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (DIRECT SEARCH + CLEAN UI)
+    # 1. PRODUCT SEARCH & BROWSE (RESTORED UI + NEW FEATURES)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -99,7 +99,7 @@ def main_app():
         # 3. Create Tabs
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
 
-        # --- TAB 1: SEARCH ---
+        # --- TAB 1: PREDICTIVE SEARCH (SELECTBOX UI) ---
         with tab_search:
             if not df.empty:
                 # --- HELPER: ROBUST DATA CHECK ---
@@ -127,20 +127,19 @@ def main_app():
                                 break
                     if not name_col: name_col = valid_data_cols[0]
 
-                    # --- STEP B: PREPARE SEARCH DATA ---
+                    # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # Define keywords to exclude from the hidden search string
+                    # Exclude noise from search string
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
                         'category', 'class', 'group', 'segment' 
                     ]
 
-                    def make_search_string(row):
-                        # Construct a hidden string containing Name + SKU + Specs for matching
+                    def make_search_label(row):
                         main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                        parts = [main_name.strip()]
+                        label_parts = [main_name.strip()]
 
                         for col in valid_data_cols:
                             if col == name_col: continue
@@ -148,52 +147,52 @@ def main_app():
                             
                             val = str(row[col]).strip()
                             if val and val.lower() not in ['nan', 'none', '']:
-                                if val not in parts:
-                                    parts.append(val)
+                                if val not in label_parts:
+                                    label_parts.append(val)
                         
-                        return " | ".join(filter(None, parts)).lower()
+                        return " | ".join(filter(None, label_parts))
 
-                    search_df['Search_Index'] = search_df.apply(make_search_string, axis=1)
+                    search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
+                    # Filter and Sort
+                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
-                    # --- STEP C: SEARCH INTERFACE ---
-                    c_bar, c_clear = st.columns([7, 1])
+                    # --- STEP C: SEARCH WIDGET (Previous UI) ---
+                    c_bar, c_clear = st.columns([8, 1])
                     
                     with c_bar:
-                        # Direct Text Input: Strictly empty until user types
-                        search_query = st.text_input(
-                            "Search Product", 
-                            placeholder="Type Name, SKU or Specs and press Enter...",
+                        # 1. The Single Predictive Box (Restored)
+                        selected_label = st.selectbox(
+                            label="Search Product",
+                            options=search_options,
+                            index=None, # Empty by default
+                            placeholder="Type Name, SKU or Specs to search...",
                             label_visibility="collapsed",
-                            key="search_input"
+                            key="search_selectbox"
                         )
 
                     with c_clear:
-                        # Clear Button using Session State
+                        # 2. Clear Button
                         def clear_search():
-                            st.session_state["search_input"] = ""
+                            st.session_state["search_selectbox"] = None
                         
                         st.button("Clear", on_click=clear_search)
 
-                    # --- STEP D: SHOW RESULTS ONLY IF TYPED ---
-                    if search_query:
-                        # 1. Filter Data
-                        query = search_query.lower()
-                        results = search_df[search_df['Search_Index'].str.contains(query, na=False)]
-                        results = results.drop(columns=['Search_Index'])
+                    st.divider()
+
+                    # --- STEP D: SHOW RESULTS ---
+                    if selected_label:
+                        results = search_df[search_df['Search_Label'] == selected_label]
+                        results = results.drop(columns=['Search_Label'])
                         
-                        # 2. Display Results
                         if not results.empty:
-                            st.success(f"Found {len(results)} result(s):")
-                            
-                            # Limit to top 20 to prevent freezing if search is too broad
-                            for i, row in results.head(20).iterrows():
+                            for i, row in results.iterrows():
                                 card_title = str(row[name_col])
-                                with st.expander(f"📦 {card_title}", expanded=False):
+                                with st.expander(f"📦 {card_title}", expanded=True):
                                     hidden_keywords = ['price', 'cost', 'srp', 'msrp', 'rrp', 'margin']
                                     
                                     all_cols = results.columns.tolist()
                                     price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
-                                    public_cols = [c for c in all_cols if c not in price_cols]
+                                    public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
                                     
                                     # Show Public Info
                                     for col in public_cols:
@@ -201,9 +200,10 @@ def main_app():
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
                                     
-                                    # Toggle Price (Hidden by default)
+                                    # Toggle Price (Switch instead of Button)
                                     if price_cols:
                                         st.markdown("---")
+                                        # Use toggle so user can hide it again
                                         show_price = st.toggle("Show Price 💰", key=f"toggle_{i}")
                                         
                                         if show_price:
@@ -213,11 +213,6 @@ def main_app():
                                                 try: val = f"{float(val):,.2f}"
                                                 except: pass
                                                 cols[idx].metric(label=p_col, value=val)
-                        else:
-                            st.warning(f"No products found matching '{search_query}'")
-                    
-                    # If search_query is empty, we do NOTHING (No result showed)
-            
             else:
                 if 'df' in locals() and df.empty: 
                     st.warning("Database is empty. Please upload a file in the Admin tab.")
@@ -427,6 +422,7 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
 
 
