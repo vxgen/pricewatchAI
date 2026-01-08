@@ -268,19 +268,25 @@ def main_app():
         # 2. File Upload
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True)
         
+        # --- KEY UPDATE: Checkbox for Header Toggle ---
+        has_headers = st.checkbox("My file has a header row (e.g. 'SKU', 'Name')", value=True)
+        
         if files:
             for file in files:
                 st.markdown(f"### 📄 {file.name}")
                 try:
+                    # Logic to treat first row as header OR data
+                    header_arg = 0 if has_headers else None
+                    
                     if file.name.endswith('csv'): 
-                        df = pd.read_csv(file)
+                        df = pd.read_csv(file, header=header_arg)
                     else: 
-                        df = pd.read_excel(file)
+                        df = pd.read_excel(file, header=header_arg)
                     
                     # Cleanup
                     df = df.dropna(how='all').dropna(axis=1, how='all')
                     
-                    st.write("Preview (No Mapping Required):", df.head(3))
+                    st.write("Preview (Ready to Save):", df.head(3))
                     
                     # Direct Save
                     if st.button(f"☁️ Save '{file.name}'", key=f"save_{file.name}"):
@@ -297,17 +303,19 @@ def main_app():
     # =======================================================
     elif menu == "Data Update (Direct)":
         st.header("🔄 Update Existing Category")
-        st.info("Upload a new file to identify changes (New vs EOL). The file structure must match your original upload.")
+        st.info("Upload a new file to identify changes (New vs EOL).")
         
         cats = dm.get_categories()
         cat_sel = st.selectbox("Category to Update", cats)
         
         up_file = st.file_uploader("Upload New Pricebook")
+        has_headers_up = st.checkbox("File has headers", value=True, key="up_headers")
         
         if up_file:
             try:
-                if up_file.name.endswith('csv'): df = pd.read_csv(up_file)
-                else: df = pd.read_excel(up_file)
+                header_arg = 0 if has_headers_up else None
+                if up_file.name.endswith('csv'): df = pd.read_csv(up_file, header=header_arg)
+                else: df = pd.read_excel(up_file, header=header_arg)
                 
                 df = df.dropna(how='all').dropna(axis=1, how='all')
                 
@@ -315,13 +323,12 @@ def main_app():
                 
                 # NO MAPPING LOGIC. Just ask for the ID column.
                 st.markdown("### Select Unique ID")
-                st.caption("We need one column (e.g., SKU or Model Name) to identify which products are new or removed.")
+                st.caption("Select the column that identifies unique products (e.g. SKU).")
                 
-                # Try to auto-guess the ID column
                 default_idx = 0
                 cols = list(df.columns)
                 for i, col in enumerate(cols):
-                    if 'sku' in col.lower() or 'model' in col.lower():
+                    if 'sku' in str(col).lower() or 'model' in str(col).lower():
                         default_idx = i
                         break
                         
