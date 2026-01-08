@@ -73,12 +73,12 @@ def main_app():
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
 # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (RESTORED UI + NEW FEATURES)
+    # 1. PRODUCT SEARCH & BROWSE (BEST PREDICTIVE UI)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         
-        # 1. Refresh Button (With Error Handling)
+        # 1. Refresh Button
         if st.button("Refresh Database"):
             try:
                 dm.get_all_products_df.clear()
@@ -99,7 +99,7 @@ def main_app():
         # 3. Create Tabs
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
 
-        # --- TAB 1: PREDICTIVE SEARCH (SELECTBOX UI) ---
+        # --- TAB 1: PREDICTIVE SEARCH ---
         with tab_search:
             if not df.empty:
                 # --- HELPER: ROBUST DATA CHECK ---
@@ -130,7 +130,7 @@ def main_app():
                     # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # Exclude noise from search string
+                    # STRICTLY exclude these to keep the dropdown clean
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
@@ -153,25 +153,28 @@ def main_app():
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
-                    # Filter and Sort
+                    # Sort options to make the list look organized
                     search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
 
-                    # --- STEP C: SEARCH WIDGET (Previous UI) ---
+                    # --- STEP C: SEARCH WIDGET ---
+                    # Using columns to put "Clear" button next to the bar
                     c_bar, c_clear = st.columns([8, 1])
                     
                     with c_bar:
-                        # 1. The Single Predictive Box (Restored)
+                        # 1. PREDICTIVE BOX (Selectbox)
+                        # Note: This widget natively shows the list on click. 
+                        # This is required to allow the "Type-to-Predict" functionality.
                         selected_label = st.selectbox(
                             label="Search Product",
                             options=search_options,
-                            index=None, # Empty by default
-                            placeholder="Type Name, SKU or Specs to search...",
+                            index=None, # Keeps box empty initially
+                            placeholder="Start typing Name or SKU...",
                             label_visibility="collapsed",
                             key="search_selectbox"
                         )
 
                     with c_clear:
-                        # 2. Clear Button
+                        # 2. CLEAR BUTTON
                         def clear_search():
                             st.session_state["search_selectbox"] = None
                         
@@ -194,16 +197,15 @@ def main_app():
                                     price_cols = [c for c in all_cols if any(k in c.lower() for k in hidden_keywords)]
                                     public_cols = [c for c in all_cols if c not in price_cols and c != 'Search_Label']
                                     
-                                    # Show Public Info
+                                    # Display Public Info
                                     for col in public_cols:
                                         val = str(row[col]).strip()
                                         if val and val.lower() != 'nan':
                                             st.write(f"**{col}:** {row[col]}")
                                     
-                                    # Toggle Price (Switch instead of Button)
+                                    # Toggle Price (Hidden by default)
                                     if price_cols:
                                         st.markdown("---")
-                                        # Use toggle so user can hide it again
                                         show_price = st.toggle("Show Price 💰", key=f"toggle_{i}")
                                         
                                         if show_price:
@@ -247,7 +249,6 @@ def main_app():
                         st.info(f"No data found for category: {cat_sel}")
                 else:
                     st.info("No product data available or 'category' column missing.")
-
     # =======================================================
     # 2. UPLOAD & MAPPING
     # =======================================================
@@ -422,6 +423,7 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
 
 
 
