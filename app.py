@@ -4,6 +4,7 @@ import data_manager as dm
 from io import BytesIO
 import hashlib
 import difflib
+import time
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
@@ -15,15 +16,6 @@ def find_best_match(target, options):
         match_index = options_lower.index(matches[0])
         return options[match_index]
     return None
-
-# --- HELPER: CLEAN DISPLAY ---
-def clean_display_df(df):
-    """
-    Hides system columns or empty duplicate columns for cleaner display.
-    """
-    # Drop columns that are completely empty
-    df = df.dropna(axis=1, how='all')
-    return df
 
 # --- AUTH HELPERS ---
 def hash_pw(password):
@@ -80,24 +72,35 @@ def main_app():
         
     # --- NAVIGATION MENU ---
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
- # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (HIDDEN UNTIL TYPED)
+    
+    # =======================================================
+    # 1. PRODUCT SEARCH & BROWSE
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
         
-        # 1. Refresh Button
+        # 1. Refresh Button (With Error Handling)
         if st.button("Refresh Database"):
-            dm.get_all_products_df.clear()
-            st.rerun()
+            try:
+                dm.get_all_products_df.clear()
+                st.toast("Cache cleared. Reloading...", icon="🔄")
+                time.sleep(1) # Small pause to prevent API rate limits
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error refreshing: {e}")
 
-        # 2. Get Data
-        df = dm.get_all_products_df()
+        # 2. Safe Data Loading (Fixes APIError Crash)
+        try:
+            df = dm.get_all_products_df()
+        except Exception as e:
+            st.error("⚠️ Connection Busy: Google Sheets API limit reached.")
+            st.caption("Please wait 10 seconds and click 'Refresh Database' again.")
+            df = pd.DataFrame() # Empty placeholder to prevent crash
 
         # 3. Create Tabs
         tab_search, tab_browse = st.tabs(["Search (Predictive)", "Browse Full Category"])
 
-        # --- TAB 1: PREDICTIVE SEARCH ---
+        # --- TAB 1: PREDICTIVE SEARCH (REVERTED TO SELECTBOX) ---
         with tab_search:
             if not df.empty:
                 # --- HELPER: ROBUST DATA CHECK ---
@@ -107,7 +110,6 @@ def main_app():
                     is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
                     return not is_empty.all()
 
-                # Identify columns that actually have text
                 valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
                 
                 if not valid_data_cols:
@@ -129,11 +131,11 @@ def main_app():
                     # --- STEP B: BUILD CLEAN SEARCH LABEL ---
                     search_df = df.copy()
 
-                    # Keywords to exclude from the Search String (Cleanliness & Privacy)
+                    # Exclude these from the visual label (Reduces noise & privacy risk)
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
-                        'category', 'class', 'group', 'segment' # Removes "Professional Monitors"
+                        'category', 'class', 'group', 'segment' # Removes "Professional Monitors" noise
                     ]
 
                     def make_search_label(row):
@@ -152,33 +154,18 @@ def main_app():
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
-                    
-                    # --- STEP C: SEARCH WIDGET (TWO-STEP) ---
-                    # 1. First, the User types text (Search Trigger)
-                    search_query = st.text_input(
-                        "Start typing to search...", 
-                        placeholder="e.g. mp275",
-                        help="Type a keyword and press Enter to see predictions."
+                    search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
+
+                    # --- STEP C: SEARCH WIDGET (Single, Instant) ---
+                    # Using standard selectbox allows "Type to Filter" immediately.
+                    selected_label = st.selectbox(
+                        label="Product Search",
+                        options=search_options,
+                        index=None, # Keeps box empty until user types/clicks
+                        placeholder="Start typing to search (Name, SKU, Specs)...",
+                        label_visibility="collapsed"
                     )
                     
-                    selected_label = None
-
-                    # 2. Only show the dropdown IF text is typed
-                    if search_query:
-                        # Filter options based on the typed text (Case Insensitive)
-                        all_labels = search_df['Search_Label'].unique().tolist()
-                        matching_options = [opt for opt in all_labels if search_query.lower() in str(opt).lower()]
-                        
-                        if matching_options:
-                            # Show the "Predictive" dropdown with ONLY the matches
-                            selected_label = st.selectbox(
-                                f"Found {len(matching_options)} match(es):",
-                                options=sorted(matching_options),
-                                index=0 # Auto-select the first best match
-                            )
-                        else:
-                            st.warning("No matches found.")
-
                     st.divider()
 
                     # --- STEP D: SHOW RESULTS ---
@@ -211,11 +198,17 @@ def main_app():
                                                 except: pass
                                                 cols[idx].metric(label=p_col, value=val)
             else:
-                st.warning("Database is empty. Please upload a file in the Admin tab.")
+                if 'df' in locals() and df.empty: # Only show warning if DF loaded but empty
+                    st.warning("Database is empty. Please upload a file in the Admin tab.")
 
         # --- TAB 2: BROWSE FULL CATEGORY ---
         with tab_browse:
-            cats = dm.get_categories()
+            # Safe loading for categories too
+            try:
+                cats = dm.get_categories()
+            except:
+                cats = []
+                
             if not cats:
                 st.warning("No categories found.")
             else:
@@ -241,6 +234,7 @@ def main_app():
                         st.info(f"No data found for category: {cat_sel}")
                 else:
                     st.info("No product data available or 'category' column missing.")
+
     # =======================================================
     # 2. UPLOAD & MAPPING
     # =======================================================
@@ -415,5 +409,3 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
-
-
