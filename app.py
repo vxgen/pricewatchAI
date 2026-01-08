@@ -82,7 +82,7 @@ def main_app():
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Upload & Mapping", "Data Update"])
     
     # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE (UPDATED LOGIC)
+    # 1. PRODUCT SEARCH & BROWSE
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -107,8 +107,8 @@ def main_app():
                     if col_name not in dataframe.columns: return False
                     # Convert to string, strip whitespace
                     s = dataframe[col_name].astype(str).str.strip()
-                    # valid if it contains anything other than '', 'nan', 'none', 'nat'
-                    is_empty = s.lower().isin(['nan', 'none', '', 'nat'])
+                    # FIX: Use .str.lower() instead of .lower()
+                    is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
                     # If ALL values are empty/nan, return False. Otherwise True.
                     return not is_empty.all()
 
