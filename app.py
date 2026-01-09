@@ -23,6 +23,8 @@ def normalize_items(items):
             new_item['discount_val'] = float(new_item.get('discount', 0))
         if 'discount_type' not in new_item:
             new_item['discount_type'] = '%'
+        if 'desc' not in new_item:
+            new_item['desc'] = ""
         clean_items.append(new_item)
     return clean_items
 
@@ -32,7 +34,7 @@ def add_quote_item_callback(item):
         st.session_state['quote_items'] = []
     
     # Validate name before adding
-    if not item['name'] or item['name'].lower() == 'nan':
+    if not item['name'] or str(item['name']).lower() in ['nan', 'none', '']:
         st.toast("Error: Product name is missing!", icon="❌")
         return
 
@@ -291,7 +293,7 @@ def main_app():
             else: st.warning("No categories.")
 
     # =======================================================
-    # 2. QUOTE GENERATOR (FIXED SEARCH)
+    # 2. QUOTE GENERATOR
     # =======================================================
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
@@ -317,16 +319,13 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
-                        # --- STRICT DATA FILTERING (Same as Search Tab) ---
                         def col_has_data(dataframe, col_name):
                             if col_name not in dataframe.columns: return False
                             s = dataframe[col_name].astype(str).str.strip()
-                            # Filter out 'nan' strings effectively
                             is_empty = s.str.lower().isin(['nan', 'none', '', 'nat', 'null'])
                             return not is_empty.all()
 
                         valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
-                        
                         if valid_data_cols:
                             name_col = None
                             for col in valid_data_cols:
@@ -340,10 +339,8 @@ def main_app():
                             forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
                             
                             def make_lbl(row):
-                                # CRITICAL FIX: Handle NaN in Name Column
                                 main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                                if main.lower() in ['nan', 'none', '']: return None # Skip invalid rows
-                                
+                                if main.lower() in ['nan', 'none', '']: return None 
                                 parts = [main.strip()]
                                 for col in valid_data_cols:
                                     if col == name_col: continue
@@ -354,7 +351,6 @@ def main_app():
                                 return " | ".join(filter(None, parts))
 
                             search_df['Label'] = search_df.apply(make_lbl, axis=1)
-                            # Remove None/Empty entries to clear "nan" and garbage from list
                             opts = sorted([x for x in search_df['Label'].unique().tolist() if x])
                             
                             sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...", key="q_search_product")
@@ -371,6 +367,13 @@ def main_app():
                                             price_guess = float(val_clean); break 
                                     except: continue
                                 
+                                # -- NEW: Try to find description column --
+                                desc_guess = ""
+                                desc_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
+                                if desc_cols:
+                                    desc_guess = str(row[desc_cols[0]])
+                                    if desc_guess.lower() == 'nan': desc_guess = ""
+
                                 c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                                 aq = c1.number_input("Qty", 1, 1000, 1, key=f"q_{sel_lbl}")
                                 ap = c2.number_input("Unit Price", value=price_guess, key=f"p_{sel_lbl}")
@@ -378,7 +381,8 @@ def main_app():
                                 ad_type = c4.selectbox("Type", ["%", "$"], key=f"t_{sel_lbl}")
                                 
                                 item_to_add = {
-                                    "name": str(row[name_col]), "desc": "",
+                                    "name": str(row[name_col]), 
+                                    "desc": desc_guess, # Added loaded desc
                                     "qty": aq, "price": ap,
                                     "discount_val": ad_val, "discount_type": ad_type,
                                     "total": 0
@@ -389,6 +393,7 @@ def main_app():
                 with t_manual:
                     with st.form("manual_add", clear_on_submit=True):
                         mn = st.text_input("Product Name")
+                        md = st.text_input("Description") # Added Desc input
                         c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                         mq = c1.number_input("Qty", 1, 1000, 1)
                         mp = c2.number_input("Unit Price ($)", 0.0)
@@ -398,7 +403,7 @@ def main_app():
                         if st.form_submit_button("Add Custom Item"):
                             if mn:
                                 item = {
-                                    "name": mn, "desc": "Custom Item",
+                                    "name": mn, "desc": md,
                                     "qty": mq, "price": mp,
                                     "discount_val": md_val, "discount_type": md_type,
                                     "total": 0
@@ -412,9 +417,12 @@ def main_app():
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
+                # --- UPDATED EDITOR CONFIG ---
                 edited_df = st.data_editor(
                     q_df, num_rows="dynamic", use_container_width=True, key="editor_quote",
                     column_config={
+                        "name": st.column_config.TextColumn("Item Name", disabled=True),
+                        "desc": st.column_config.TextColumn("Description"), # Editable
                         "price": st.column_config.NumberColumn("Unit Price", format="$%.2f", required=True),
                         "qty": st.column_config.NumberColumn("Qty", min_value=1, step=1, required=True),
                         "discount_val": st.column_config.NumberColumn("Discount Value", min_value=0.0),
@@ -427,11 +435,15 @@ def main_app():
                 for index, row in edited_df.iterrows():
                     q = float(row.get('qty', 0)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
+                    
+                    # Update desc in memory
+                    d_text = str(row.get('desc', ''))
+
                     gross = q * p
                     disc = gross * (d/100) if t == '%' else d
                     net = gross - disc
                     sub_ex += net; tot_disc += disc
-                    r = row.to_dict(); r['total'] = net
+                    r = row.to_dict(); r['total'] = net; r['desc'] = d_text
                     items_save.append(r)
 
                 gst = sub_ex * 0.10
