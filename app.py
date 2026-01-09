@@ -88,13 +88,14 @@ def extract_product_data(label, df_with_labels, name_col):
         
     # 3. Description
     p_desc = ""
+    # Priority 1: Explicit columns
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
         val = str(row[dc])
         if val and val.lower() not in ['nan', 'none', '']:
             p_desc = val; break
             
-    # Fallback Desc
+    # Fallback: Construct from other columns if empty
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -122,7 +123,7 @@ def on_product_search_change():
                 st.session_state['input_name'] = data['name']
                 st.session_state['input_desc'] = data['desc']
                 st.session_state['input_price'] = data['price']
-                st.session_state['input_qty'] = 1.0
+                st.session_state['input_qty'] = 1.0 # Default
         except Exception as e: print(e)
 
 def add_line_item_callback():
@@ -274,7 +275,6 @@ def main_app():
                 df_lbl, name_col = generate_search_labels(df)
                 if df_lbl.empty: st.warning("No valid data"); st.stop()
                 
-                # Filter out empty labels
                 df_lbl = df_lbl.dropna(subset=['Search_Label'])
                 opts = sorted(df_lbl['Search_Label'].unique().tolist())
                 
@@ -308,7 +308,7 @@ def main_app():
                     cd = df[df['category'] == cs]
                     st.dataframe(cd, use_container_width=True)
 
-    # 2. QUOTE
+    # --- 2. QUOTE ---
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
         tab_create, tab_hist = st.tabs(["Create Quote", "History"])
@@ -321,7 +321,6 @@ def main_app():
             search_opts = []
             df_lbl = pd.DataFrame()
             name_col = None
-            
             if not df.empty:
                 df_lbl, name_col = generate_search_labels(df)
                 if not df_lbl.empty:
@@ -341,10 +340,9 @@ def main_app():
 
             st.divider()
 
-            # 2. ADD ITEM
+            # 2. ADD ITEM (SECTION 2)
             st.subheader("2. Add Line Item")
             
-            # Section 2 Search
             st.selectbox(
                 "Search Database (Auto-fill)", options=search_opts, index=None, 
                 key="q_search_product", on_change=on_product_search_change
@@ -363,17 +361,16 @@ def main_app():
 
             st.divider()
             
-            # 3. REVIEW
+            # 3. REVIEW (SECTION 3)
             st.subheader("3. Review Items")
             
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Combine Options for Table Dropdown
-                # We include search_opts (Long Labels) AND current short names to handle custom items
-                current_names = q_df['name'].unique().tolist()
-                comb_opts = sorted(list(set(search_opts + current_names))) if search_opts else current_names
+                # Combine options for table dropdown (Short Names + Long Labels)
+                curr_names = q_df['name'].unique().tolist()
+                comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
                 edited = st.data_editor(
                     q_df,
@@ -396,34 +393,29 @@ def main_app():
                 sub_ex = 0; tot_disc = 0
                 
                 for idx, row in edited.iterrows():
-                    # Check if the name in the table matches a "Long Label" (Search Option)
-                    # If it does, we assume it's a fresh selection and needs parsing.
-                    curr_name = row['name']
+                    curr_name = str(row['name'])
                     
-                    # Logic: If name is in search_opts, it's a Long String. 
-                    # If it's a long string, we parse it into short name + desc + price.
-                    if curr_name in search_opts:
+                    # DETECT PIPE: If name has a pipe '|', it is a Search Label -> Trigger Auto-fill
+                    if "|" in curr_name:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
-                            # OVERWRITE the row data with extracted data
                             row['name'] = data['name']
                             row['desc'] = data['desc']
                             row['price'] = data['price']
-                            row['qty'] = 1.0 # Default Qty
+                            row['qty'] = 1.0
                             has_changes = True
                     
                     # Calc
                     q = float(row.get('qty', 1)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
-                    g = q*p
-                    di = g*(d/100) if t=='%' else d
-                    n = g-di
+                    g = q * p
+                    di = g * (d/100) if t == '%' else d
+                    n = g - di
                     sub_ex += n; tot_disc += di
                     
                     r = row.to_dict(); r['total'] = n
                     items_save.append(r)
                 
-                # Save State & Rerun if we auto-filled
                 st.session_state['quote_items'] = items_save
                 if has_changes: st.rerun()
 
@@ -472,7 +464,7 @@ def main_app():
                             dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
             else: st.info("Empty")
 
-    # 3. UPLOAD
+    # 3. UPLOAD (Same)
     elif menu == "Upload (Direct)":
         st.header("📂 Upload"); c1, c2 = st.columns(2)
         with c1: cats = dm.get_categories(); cs = st.selectbox("Cat", cats if cats else ["Default"])
@@ -490,7 +482,7 @@ def main_app():
                         st.success("Saved"); time.sleep(1); st.rerun()
                     except Exception as e: st.error(str(e))
 
-    # 4. UPDATE
+    # 4. UPDATE (Same)
     elif menu == "Data Update (Direct)":
         st.header("🔄 Update"); cats = dm.get_categories(); cs = st.selectbox("Cat", cats)
         up = st.file_uploader("File"); hh = st.checkbox("Headers?", True, key="uph")
