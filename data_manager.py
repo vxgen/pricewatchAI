@@ -49,7 +49,6 @@ def get_all_products_df():
     for cat in cats:
         try:
             ws = sh.worksheet(cat)
-            # Use get_all_values for robust reading (handles missing headers gracefully)
             data = ws.get_all_values()
             
             if data and len(data) > 1:
@@ -127,14 +126,15 @@ def save_products_dynamic(df, category, user):
     add_category(category, user)
     ws = ensure_category_sheet_exists(category)
     
-    # Check if sheet has real data
     existing_data = ws.get_all_values()
+    
     is_effectively_empty = False
     if not existing_data:
         is_effectively_empty = True
     else:
-        flat = [x for sub in existing_data for x in sub if x.strip()]
-        if not flat: is_effectively_empty = True
+        flat_data = [item for sublist in existing_data for item in sublist if item.strip()]
+        if not flat_data:
+            is_effectively_empty = True
 
     clean_df = df.astype(str)
     
@@ -177,16 +177,21 @@ def update_products_dynamic(new_df, category, user, key_column):
             eol_rows = current_df[current_df[key_column].astype(str).isin(eol_keys)]
             eol_rows['eol_date'] = str(datetime.now())
             eol_rows['original_category'] = category
+            
             try:
                 sh = get_sheet()
-                try: ws_eol = sh.worksheet("eol_products")
-                except: 
+                try:
+                    ws_eol = sh.worksheet("eol_products")
+                except:
                     ws_eol = sh.add_worksheet(title="eol_products", rows=1000, cols=20)
                     ws_eol.append_row(eol_rows.columns.tolist())
+                
                 ws_eol.append_rows(eol_rows.astype(str).values.tolist())
-            except: pass
+            except:
+                pass
 
     ws.clear()
+    
     clean_df = new_df.astype(str)
     data_to_write = [clean_df.columns.tolist()] + clean_df.values.tolist()
     ws.update(values=data_to_write, range_name='A1')
@@ -210,6 +215,9 @@ def save_quote(quote_data, user):
             "total_amount", "items_json"
         ])
     
+    # If ID exists (edit mode), reuse it? 
+    # For now, simplistic approach: always create new version or user deletes old one.
+    # To keep simple, we generate new ID.
     quote_id = f"Q-{int(time.time())}"
     
     row = [
@@ -229,26 +237,26 @@ def save_quote(quote_data, user):
     return quote_id
 
 def delete_quote(quote_id, user):
+    """Deletes a quote row based on ID"""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
+        
         if not data: return False
-        
         headers = data[0]
-        # Find index of quote_id
-        try: idx = headers.index("quote_id")
-        except: return False
+        try: 
+            idx = headers.index("quote_id")
+        except: 
+            return False
         
-        # Find row to delete (rows are 1-indexed in GSheets, data is 0-indexed)
-        # data[0] is row 1. data[1] is row 2.
+        # Find row index to delete (1-based for gspread)
         for i, row in enumerate(data):
-            if i == 0: continue # Skip header
+            if i == 0: continue
             if len(row) > idx and row[idx] == str(quote_id):
-                ws.delete_rows(i + 1) # gspread uses 1-based indexing
+                ws.delete_rows(i + 1)
                 log_action(user, "Deleted Quote", f"ID: {quote_id}")
                 get_quotes.clear()
                 return True
-    except Exception as e:
-        print(f"Error deleting: {e}")
+    except:
         return False
     return False
