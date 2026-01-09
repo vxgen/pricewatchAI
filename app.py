@@ -88,14 +88,13 @@ def extract_product_data(label, df_with_labels, name_col):
         
     # 3. Description
     p_desc = ""
-    # Priority 1: Explicit columns
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
         val = str(row[dc])
         if val and val.lower() not in ['nan', 'none', '']:
             p_desc = val; break
             
-    # Fallback: Construct from other columns if empty
+    # Fallback Desc
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -123,7 +122,7 @@ def on_product_search_change():
                 st.session_state['input_name'] = data['name']
                 st.session_state['input_desc'] = data['desc']
                 st.session_state['input_price'] = data['price']
-                st.session_state['input_qty'] = 1.0 # Default
+                st.session_state['input_qty'] = 1.0
         except Exception as e: print(e)
 
 def add_line_item_callback():
@@ -241,7 +240,7 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
 
-# Init Session
+# Init Inputs
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
 if 'input_desc' not in st.session_state: st.session_state['input_desc'] = ""
 if 'input_price' not in st.session_state: st.session_state['input_price'] = 0.0
@@ -308,7 +307,7 @@ def main_app():
                     cd = df[df['category'] == cs]
                     st.dataframe(cd, use_container_width=True)
 
-    # --- 2. QUOTE ---
+    # 2. QUOTE
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
         tab_create, tab_hist = st.tabs(["Create Quote", "History"])
@@ -368,7 +367,7 @@ def main_app():
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Combine options for table dropdown (Short Names + Long Labels)
+                # Combine options for table dropdown
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
@@ -388,14 +387,14 @@ def main_app():
                     }
                 )
                 
-                # --- AUTO-DISTRIBUTE INTERCEPTOR ---
+                # --- AUTO-DISTRIBUTE LOGIC ---
                 items_save = []; has_changes = False
                 sub_ex = 0; tot_disc = 0
                 
                 for idx, row in edited.iterrows():
                     curr_name = str(row['name'])
                     
-                    # DETECT PIPE: If name has a pipe '|', it is a Search Label -> Trigger Auto-fill
+                    # TRIGGER: If name contains pipe "|", it's a Long Search Label. Auto-fill it.
                     if "|" in curr_name:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
