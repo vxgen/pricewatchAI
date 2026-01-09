@@ -11,37 +11,21 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- DATA NORMALIZER (FIXES CRASH ON OLD DATA) ---
+# --- DATA NORMALIZER ---
 def normalize_items(items):
-    """
-    Ensures all items have the required keys (discount_val, discount_type)
-    to prevent KeyErrors when loading old quotes.
-    """
     clean_items = []
     for item in items:
-        # Create a copy to avoid mutation issues
         new_item = item.copy()
-        
-        # Backfill missing keys for old data
-        if 'discount_val' not in new_item:
-            # Old 'discount' field might exist
-            new_item['discount_val'] = float(new_item.get('discount', 0))
-        
-        if 'discount_type' not in new_item:
-            new_item['discount_type'] = '%'
-            
+        if 'discount_val' not in new_item: new_item['discount_val'] = float(new_item.get('discount', 0))
+        if 'discount_type' not in new_item: new_item['discount_type'] = '%'
         clean_items.append(new_item)
     return clean_items
 
 # --- CALLBACKS ---
 def add_quote_item_callback(item):
-    if 'quote_items' not in st.session_state:
-        st.session_state['quote_items'] = []
-    
-    # Normalize before adding just in case
+    if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
     item = normalize_items([item])[0]
     st.session_state['quote_items'].append(item)
-    
     st.session_state["q_search_product"] = None
     st.toast(f"Added: {item['name']}")
 
@@ -66,14 +50,14 @@ def create_pdf(quote_row):
     
     # Extract & Normalize Data
     raw_items = json.loads(quote_row['items_json'])
-    items = normalize_items(raw_items) # FIX: Normalize here too
+    items = normalize_items(raw_items)
     
     client_name = quote_row['client_name']
+    client_phone = str(quote_row.get('client_phone', '')) # Added Phone
     quote_id = str(quote_row['quote_id'])
     created_at = str(quote_row['created_at'])[:10]
     expire_date = str(quote_row.get('expiration_date', ''))
     
-    # Recalculate Logic
     subtotal_ex_gst = 0
     total_discount = 0
     
@@ -84,11 +68,8 @@ def create_pdf(quote_row):
         d_type = item.get('discount_type', '%')
         
         gross = qty * price
-        
-        if d_type == '%':
-            disc_amt = gross * (d_val / 100)
-        else:
-            disc_amt = d_val
+        if d_type == '%': disc_amt = gross * (d_val / 100)
+        else: disc_amt = d_val
             
         net_line = gross - disc_amt
         subtotal_ex_gst += net_line
@@ -100,14 +81,19 @@ def create_pdf(quote_row):
     # --- INFO HEADER ---
     pdf.set_font('Arial', '', 10)
     right_x = 130
+    
     pdf.set_xy(right_x, 20)
     pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, quote_id, 0, 1)
+    
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, created_at, 0, 1)
+    
     pdf.set_x(right_x)
-    pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1)
+    pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, expire_date, 0, 1) # RESTORED
+    
     pdf.set_x(right_x)
     pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
+    
     pdf.ln(10)
     
     # --- SELLER / BUYER ---
@@ -123,11 +109,13 @@ def create_pdf(quote_row):
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
     pdf.cell(80, 5, client_name, 0, 1)
     pdf.set_x(110); pdf.cell(80, 5, str(quote_row.get('client_email', '')), 0, 1)
+    if client_phone:
+        pdf.set_x(110); pdf.cell(80, 5, client_phone, 0, 1)
+    
     pdf.ln(15)
     
     # --- LINE ITEMS ---
     pdf.set_font('Arial', 'B', 12); pdf.cell(0, 10, "Line Items", 0, 1)
-    
     pdf.set_font('Arial', 'B', 9); pdf.set_fill_color(245, 245, 245)
     pdf.cell(85, 8, "Item", 1, 0, 'L', True)
     pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
@@ -151,7 +139,6 @@ def create_pdf(quote_row):
         else:
             disc_str = f"${d_val}"
             disc_amt = d_val
-            
         net_total = gross - disc_amt
         
         pdf.cell(85, 8, name, 1, 0, 'L')
@@ -191,6 +178,11 @@ def check_login(username, password):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
+
+# Initialize Input States if not present
+if 'q_client_in' not in st.session_state: st.session_state['q_client_in'] = ""
+if 'q_email_in' not in st.session_state: st.session_state['q_email_in'] = ""
+if 'q_phone_in' not in st.session_state: st.session_state['q_phone_in'] = ""
 
 def login_page():
     st.title("🔐 Login")
@@ -308,8 +300,10 @@ def main_app():
             with c_details:
                 st.subheader("1. Client Details")
                 with st.container(border=True):
-                    q_client = st.text_input("Client Name / Company", key="q_client", value=st.session_state.get('edit_client', ''))
-                    q_email = st.text_input("Client Email", key="q_email", value=st.session_state.get('edit_email', ''))
+                    # Using Session State keys for persistence
+                    st.text_input("Client Name / Company", key="q_client_in")
+                    st.text_input("Client Email", key="q_email_in")
+                    st.text_input("Client Phone", key="q_phone_in") # Added Phone
                     q_date = st.date_input("Date", date.today())
                     q_expire = st.date_input("Expiration Date", date.today())
                     q_terms = st.text_area("Terms & Conditions", "Payment due within 30 days.")
@@ -320,12 +314,16 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
-                        # Smart Search Logic Reused
-                        valid_data_cols = [c for c in df.columns if not df[c].astype(str).str.strip().eq('').all()]
+                        def col_has_data(dataframe, col_name):
+                            if col_name not in dataframe.columns: return False
+                            s = dataframe[col_name].astype(str).str.strip()
+                            is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
+                            return not is_empty.all()
+                        valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
                         if valid_data_cols:
                             name_col = valid_data_cols[0]
                             for col in valid_data_cols:
-                                if 'product' in col.lower() or 'model' in col.lower(): name_col = col; break
+                                if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
                             
                             search_df = df.copy()
                             forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
@@ -394,11 +392,8 @@ def main_app():
 
             st.divider()
             
-            # ENSURE ITEMS ARE NORMALIZED BEFORE USE
             if st.session_state['quote_items']:
-                # Clean Data first
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
-                
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
                 edited_df = st.data_editor(
@@ -414,10 +409,8 @@ def main_app():
                 
                 sub_ex = 0; tot_disc = 0; items_save = []
                 for index, row in edited_df.iterrows():
-                    # SAFER ACCESS
                     q = float(row.get('qty', 0)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
-                    
                     gross = q * p
                     disc = gross * (d/100) if t == '%' else d
                     net = gross - disc
@@ -436,9 +429,16 @@ def main_app():
                 
                 c_sv, c_cl = st.columns([1, 5])
                 if c_sv.button("💾 Save Quote", type="primary"):
-                    if not q_client: st.error("Client Name Required")
+                    if not st.session_state['q_client_in']: st.error("Client Name Required")
                     else:
-                        payload = {"client_name": q_client, "client_email": q_email, "total_amount": grand, "expiration_date": str(q_expire), "items": items_save}
+                        payload = {
+                            "client_name": st.session_state['q_client_in'], 
+                            "client_email": st.session_state['q_email_in'], 
+                            "client_phone": st.session_state['q_phone_in'],
+                            "total_amount": grand, 
+                            "expiration_date": str(q_expire), 
+                            "items": items_save
+                        }
                         dm.save_quote(payload, st.session_state['user'])
                         st.success("Saved!"); st.session_state['quote_items'] = []; time.sleep(1); st.rerun()
                 if c_cl.button("Clear All"): st.session_state['quote_items'] = []; st.rerun()
@@ -458,11 +458,13 @@ def main_app():
                         except Exception as e: c1.error(f"PDF Error: {e}")
                         
                         if c2.button("✏️ Edit Quote", key=f"e_{row['quote_id']}"):
-                            # Normalize loaded items immediately
                             loaded_items = json.loads(row['items_json'])
                             st.session_state['quote_items'] = normalize_items(loaded_items)
-                            st.session_state['edit_client'] = row['client_name']
-                            st.session_state['edit_email'] = row.get('client_email', '')
+                            
+                            # Inject persistent values
+                            st.session_state['q_client_in'] = row['client_name']
+                            st.session_state['q_email_in'] = row.get('client_email', '')
+                            st.session_state['q_phone_in'] = row.get('client_phone', '')
                             st.toast("Loaded!"); time.sleep(1)
                         if c3.button("🗑️ Delete", key=f"d_{row['quote_id']}"):
                             dm.delete_quote(row['quote_id'], st.session_state['user']); st.rerun()
