@@ -17,21 +17,32 @@ def normalize_items(items):
     clean = []
     for item in items:
         n = item.copy()
-        try: n['qty'] = float(n.get('qty', 1))
+        # Handle Qty
+        try: 
+            q = n.get('qty')
+            n['qty'] = 1.0 if q in [None, ''] else float(q)
         except: n['qty'] = 1.0
-        try: n['price'] = float(n.get('price', 0))
+        
+        # Handle Price
+        try: 
+            p = n.get('price')
+            n['price'] = 0.0 if p in [None, ''] else float(p)
         except: n['price'] = 0.0
-        try: n['discount_val'] = float(n.get('discount_val', 0))
+        
+        # Handle Discount
+        try: 
+            d = n.get('discount_val')
+            n['discount_val'] = 0.0 if d in [None, ''] else float(d)
         except: n['discount_val'] = 0.0
         
         if 'discount_type' not in n: n['discount_type'] = '%'
-        if 'desc' not in n: n['desc'] = ""
+        if 'desc' not in n or pd.isna(n['desc']): n['desc'] = ""
         if 'name' not in n or pd.isna(n['name']): n['name'] = ""
         
         # Calc Total
         g = n['qty'] * n['price']
-        d = g * (n['discount_val']/100) if n['discount_type'] == '%' else n['discount_val']
-        n['total'] = g - d
+        d_amt = g * (n['discount_val']/100) if n['discount_type'] == '%' else n['discount_val']
+        n['total'] = g - d_amt
         clean.append(n)
     return clean
 
@@ -68,7 +79,6 @@ def extract_product_data(label, df_with_labels, name_col):
     """Parses a Long Label back into Name, Desc, Price."""
     if not label or df_with_labels.empty: return None
     
-    # Find match
     match = df_with_labels[df_with_labels['Search_Label'] == label]
     if match.empty: return None
     row = match.iloc[0]
@@ -94,7 +104,6 @@ def extract_product_data(label, df_with_labels, name_col):
         if val and val.lower() not in ['nan', 'none', '']:
             p_desc = val; break
             
-    # Fallback Desc
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -239,6 +248,8 @@ def check_login(u, p):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
+# Ensure key exists for table force-refresh
+if 'editor_key' not in st.session_state: st.session_state['editor_key'] = 0
 
 # Init Inputs
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
@@ -270,7 +281,6 @@ def main_app():
         tab1, tab2 = st.tabs(["Search", "Browse"])
         with tab1:
             if not df.empty:
-                # Use centralized label generator
                 df_lbl, name_col = generate_search_labels(df)
                 if df_lbl.empty: st.warning("No valid data"); st.stop()
                 
@@ -316,7 +326,7 @@ def main_app():
             try: df = dm.get_all_products_df()
             except: df = pd.DataFrame()
             
-            # Prepare Labels
+            # Prepare Labels Globally for this view
             search_opts = []
             df_lbl = pd.DataFrame()
             name_col = None
@@ -367,15 +377,19 @@ def main_app():
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Combine options for table dropdown
+                # Dropdown options
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
+                
+                # --- DYNAMIC KEY TO FORCE REFRESH ---
+                # We append a counter to the key so the table resets if we programmatically change data
+                table_key = f"editor_quote_{st.session_state['editor_key']}"
                 
                 edited = st.data_editor(
                     q_df,
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="editor_quote",
+                    key=table_key,
                     column_config={
                         "name": st.column_config.SelectboxColumn("Item (Select to Auto-fill)", options=comb_opts, required=True, width="large"),
                         "desc": st.column_config.TextColumn("Description", width="medium"),
@@ -387,15 +401,15 @@ def main_app():
                     }
                 )
                 
-                # --- AUTO-DISTRIBUTE LOGIC ---
+                # --- AUTO-DISTRIBUTE INTERCEPTOR ---
                 items_save = []; has_changes = False
                 sub_ex = 0; tot_disc = 0
                 
                 for idx, row in edited.iterrows():
-                    curr_name = str(row['name'])
+                    curr_name = str(row.get('name', ''))
                     
-                    # TRIGGER: If name contains pipe "|", it's a Long Search Label. Auto-fill it.
-                    if "|" in curr_name:
+                    # DETECT PIPE: Trigger auto-fill if user selected a long label
+                    if "|" in curr_name and curr_name in search_opts:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
                             row['name'] = data['name']
@@ -404,19 +418,36 @@ def main_app():
                             row['qty'] = 1.0
                             has_changes = True
                     
-                    # Calc
-                    q = float(row.get('qty', 1)); p = float(row.get('price', 0))
-                    d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
+                    # Normalize & Calc
+                    try: q = float(row.get('qty', 1))
+                    except: q = 1.0
+                    try: p = float(row.get('price', 0))
+                    except: p = 0.0
+                    try: d = float(row.get('discount_val', 0))
+                    except: d = 0.0
+                    t = row.get('discount_type', '%')
+                    
                     g = q * p
                     di = g * (d/100) if t == '%' else d
                     n = g - di
+                    
                     sub_ex += n; tot_disc += di
                     
-                    r = row.to_dict(); r['total'] = n
+                    r = row.to_dict()
+                    r['name'] = row['name'] # Ensure updated name is saved
+                    r['desc'] = row['desc']
+                    r['price'] = p
+                    r['qty'] = q
+                    r['total'] = n
                     items_save.append(r)
                 
+                # Update State & Force Refresh if needed
                 st.session_state['quote_items'] = items_save
-                if has_changes: st.rerun()
+                
+                if has_changes:
+                    # Increment key to force table re-render with new data
+                    st.session_state['editor_key'] += 1
+                    st.rerun()
 
                 gst = sub_ex*0.10; grand = sub_ex+gst
                 m1, m2, m3, m4 = st.columns(4)
