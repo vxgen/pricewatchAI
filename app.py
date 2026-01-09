@@ -39,7 +39,6 @@ def generate_search_labels(df):
     """Generates the 'Long String' labels for searching."""
     if df.empty: return df, None
     
-    # 1. Identify valid columns
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
     valid_cols = [c for c in df.columns if col_ok(df, c)]
     if not valid_cols: return df, None
@@ -68,15 +67,12 @@ def extract_product_data(label, df_with_labels, name_col):
     """Parses a Long Label back into Name, Desc, Price."""
     if not label or df_with_labels.empty: return None
     
-    # Find match
     match = df_with_labels[df_with_labels['Search_Label'] == label]
     if match.empty: return None
     row = match.iloc[0]
     
-    # 1. Name
     p_name = str(row[name_col])
     
-    # 2. Price
     p_price = 0.0
     p_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
     for pc in p_cols:
@@ -86,7 +82,6 @@ def extract_product_data(label, df_with_labels, name_col):
                 p_price = float(val); break
         except: continue
         
-    # 3. Description
     p_desc = ""
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
@@ -94,7 +89,6 @@ def extract_product_data(label, df_with_labels, name_col):
         if val and val.lower() not in ['nan', 'none', '']:
             p_desc = val; break
             
-    # Fallback Desc
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -144,7 +138,6 @@ def add_line_item_callback():
     if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
     st.session_state['quote_items'].append(item)
     
-    # Reset
     st.session_state['input_name'] = ""; st.session_state['input_desc'] = ""
     st.session_state['input_price'] = 0.0; st.session_state['input_qty'] = 1.0
     st.session_state['q_search_product'] = None
@@ -239,8 +232,8 @@ def check_login(u, p):
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
-# NEW: Key to force table reset
-if 'editor_key' not in st.session_state: st.session_state['editor_key'] = 0
+# KEY FOR TABLE RESET
+if 'table_key_id' not in st.session_state: st.session_state['table_key_id'] = 0
 
 # Init Inputs
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
@@ -368,17 +361,18 @@ def main_app():
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
+                # Combine options
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
-                # We use a dynamic key to force reset when we change data programmatically
-                dynamic_key = f"editor_quote_{st.session_state['editor_key']}"
+                # DYNAMIC KEY forces reset when we increment it
+                dyn_key = f"q_table_{st.session_state['table_key_id']}"
                 
                 edited = st.data_editor(
                     q_df,
                     num_rows="dynamic",
                     use_container_width=True,
-                    key=dynamic_key,
+                    key=dyn_key,
                     column_config={
                         "name": st.column_config.SelectboxColumn("Item (Select to Auto-fill)", options=comb_opts, required=True, width="large"),
                         "desc": st.column_config.TextColumn("Description", width="medium"),
@@ -390,14 +384,14 @@ def main_app():
                     }
                 )
                 
-                # --- AUTO-DISTRIBUTE LOGIC (WITH FORCE RESET) ---
-                items_save = []; trigger_rerun = False
+                # --- LOGIC TO INTERCEPT & FIX TABLE ---
+                items_save = []; trigger_refresh = False
                 sub_ex = 0; tot_disc = 0
                 
                 for idx, row in edited.iterrows():
                     curr_name = str(row['name'])
                     
-                    # If user selected a Long String (contains pipe), we parse it
+                    # IF NAME IS A LONG SEARCH STRING (contains pipe |), PARSE IT
                     if "|" in curr_name and curr_name in search_opts:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
@@ -405,11 +399,10 @@ def main_app():
                             row['desc'] = data['desc']
                             row['price'] = data['price']
                             row['qty'] = 1.0
-                            # TRIGGER RE-RENDER to show clean data
-                            st.session_state['editor_key'] += 1
-                            trigger_rerun = True
+                            # FLAG TO RESET TABLE
+                            trigger_refresh = True
                     
-                    # Calc
+                    # Normal Calc
                     q = float(row.get('qty', 1)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q * p
@@ -420,8 +413,13 @@ def main_app():
                     r = row.to_dict(); r['total'] = n
                     items_save.append(r)
                 
+                # Update Session State
                 st.session_state['quote_items'] = items_save
-                if trigger_rerun: st.rerun()
+                
+                # FORCE WIDGET RESET IF WE CHANGED DATA
+                if trigger_refresh:
+                    st.session_state['table_key_id'] += 1
+                    st.rerun()
 
                 gst = sub_ex*0.10; grand = sub_ex+gst
                 m1, m2, m3, m4 = st.columns(4)
