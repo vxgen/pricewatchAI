@@ -3,8 +3,6 @@ import pandas as pd
 import data_manager as dm
 from io import BytesIO
 import hashlib
-import difflib
-import time
 import json
 from datetime import date
 from fpdf import FPDF
@@ -19,10 +17,8 @@ def normalize_items(items):
         new_item = item.copy()
         try: new_item['qty'] = float(new_item.get('qty', 1))
         except: new_item['qty'] = 1.0
-        
         try: new_item['price'] = float(new_item.get('price', 0))
         except: new_item['price'] = 0.0
-        
         try: new_item['discount_val'] = float(new_item.get('discount_val', 0))
         except: new_item['discount_val'] = 0.0
         
@@ -40,78 +36,73 @@ def normalize_items(items):
         clean_items.append(new_item)
     return clean_items
 
-# --- HELPER: GET PRODUCT DETAILS FROM LABEL ---
-def get_product_details_from_label(label, df):
-    """Parses a search label to find the specific row and details."""
-    try:
-        # Reconstruct label logic to find the row match
-        def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
-        valid_cols = [c for c in df.columns if col_ok(df, c)]
-        
-        if not valid_cols: return None
-        
-        name_col = valid_cols[0]
+# --- HELPER: FIND ROW BY LABEL ---
+def find_product_row(label, df):
+    """Reconstructs search logic to find the exact row from the dropdown label."""
+    if df.empty: return None
+    
+    # Identify valid columns
+    def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
+    valid_cols = [c for c in df.columns if col_ok(df, c)]
+    if not valid_cols: return None
+    
+    name_col = valid_cols[0]
+    for c in valid_cols: 
+        if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
+    
+    # Re-generate labels to match
+    forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
+    def mk_lbl(row):
+        m = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+        if m.lower() in ['nan','']: return "SKIP"
+        p = [m.strip()]
         for c in valid_cols:
-            if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
-            
-        forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp']
-        def mk_lbl(row):
-            main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-            parts = [main.strip()]
-            for col in valid_cols:
-                if col == name_col: continue
-                if any(k in col.lower() for k in forbidden): continue
-                val = str(row[col]).strip()
-                if val and val.lower() not in ['nan', 'none', '']:
-                    if val not in parts: parts.append(val)
-            return " | ".join(filter(None, parts))
-        
-        # This is expensive but necessary to match exact label string from dropdown
-        df['Label'] = df.apply(mk_lbl, axis=1)
-        matches = df[df['Label'] == label]
-        
-        if matches.empty: return None
-        row = matches.iloc[0]
-        
-        # Extract Data
-        p_name = str(row[name_col])
-        
-        # Price
-        p_price = 0.0
-        p_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
-        for pc in p_cols:
-            val = str(row[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
-            try:
-                if val and val.lower()!='nan': 
-                    p_price = float(val); break
-            except: continue
-            
-        # Description
-        p_desc = ""
-        d_cols = [c for c in df.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
-        if d_cols:
-            best = d_cols[0]
-            for dc in d_cols: 
-                if 'long' in dc.lower(): best = dc; break
-            val = str(row[best])
-            if val.lower() not in ['nan','']: p_desc = val
-            
-        return {"name": p_name, "desc": p_desc, "price": p_price}
-        
-    except: return None
+            if c!=name_col and not any(k in c.lower() for k in forbidden):
+                v = str(row[c]).strip()
+                if v and v.lower() not in ['nan','']: p.append(v)
+        return " | ".join(filter(None, p))
+
+    df['Label'] = df.apply(mk_lbl, axis=1)
+    match = df[df['Label'] == label]
+    if not match.empty:
+        return match.iloc[0], name_col
+    return None, name_col
 
 # --- CALLBACKS ---
 def on_product_select():
-    """Auto-fills inputs when search selection changes (Section 2)."""
+    """Section 2: Auto-fills inputs when search changes."""
     lbl = st.session_state.get("q_search_product")
     if lbl:
         try:
             df = dm.get_all_products_df()
-            details = get_product_details_from_label(lbl, df)
-            if details:
-                st.session_state['input_name'] = details['name']
-                st.session_state['input_desc'] = details['desc']
-                st.session_state['input_price'] = details['price']
+            row, name_col = find_product_row(lbl, df)
+            
+            if row is not None:
+                # 1. NAME
+                st.session_state['input_name'] = str(row[name_col])
+                
+                # 2. PRICE (Robust Cleaning)
+                price_val = 0.0
+                p_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
+                for pc in p_cols:
+                    try:
+                        val = str(row[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
+                        if val and val.lower() != 'nan':
+                            price_val = float(val); break
+                    except: continue
+                st.session_state['input_price'] = price_val
+                
+                # 3. DESCRIPTION (Aggressive Search)
+                desc_val = ""
+                # Look for specific keywords first
+                d_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
+                for dc in d_cols:
+                    val = str(row[dc])
+                    if val and val.lower() not in ['nan', 'none', '']:
+                        desc_val = val
+                        break # Take the first valid description found
+                
+                st.session_state['input_desc'] = desc_val
         except Exception as e: print(e)
 
 def add_line_item_callback():
@@ -132,7 +123,6 @@ def add_line_item_callback():
     
     if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
     st.session_state['quote_items'].append(item)
-    st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
     
     # Clear
     st.session_state['input_name'] = ""; st.session_state['input_desc'] = ""
@@ -337,7 +327,7 @@ def main_app():
             # --- 2. ADD ITEM ---
             st.subheader("2. Add Line Item")
             
-            # Label Logic for Search
+            # Label Logic
             search_opts = []
             if not df.empty:
                 def col_ok(d,c): return not d[c].astype(str).str.strip().eq('').all()
@@ -375,13 +365,13 @@ def main_app():
 
             st.divider()
             
-            # --- 3. REVIEW (WITH AUTO-DISTRIBUTE) ---
+            # --- 3. REVIEW (AUTO-UPDATE) ---
             st.subheader("3. Review Items")
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Setup dropdown opts
+                # Combine options for dropdown
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
@@ -401,22 +391,55 @@ def main_app():
                     }
                 )
                 
+                # RECALCULATE & DETECT CHANGES FOR AUTO-FILL
                 sub_ex = 0; tot_disc = 0; items_save = []
+                
+                # We iterate through the EDITED dataframe
                 for idx, row in edited.iterrows():
-                    # AUTO-DISTRIBUTE LOGIC FOR TABLE
-                    # If name is a raw label from search (contains |), parse and update
-                    if row['name'] in search_opts:
-                        details = get_product_details_from_label(row['name'], df)
-                        if details:
-                            # Update values for calculation and saving
-                            # Note: We can't update the UI dropdown instantly mid-render, but next rerun it will show clean name if we save it clean
-                            row['name'] = details['name']
-                            # Only overwrite if empty or matches old value, essentially forcing the new values
-                            row['desc'] = details['desc']
-                            row['price'] = details['price']
-                            row['qty'] = 1.0 # Default to 1
+                    # 1. AUTO-FILL LOGIC
+                    # Check if the name in the edited row matches a "Search Label" from the DB.
+                    # If it does, we look up the details.
+                    # To prevent overwriting manual edits, we only overwrite if the Price/Desc look "empty" or default
+                    # OR if we simply enforce that selecting a DB item forces a DB load.
+                    # Enforcing DB load on name match is safer for "Select from dropdown" behavior.
                     
-                    q = float(row.get('qty', 1)); p = float(row.get('price', 0))
+                    # Note: row['name'] is what the user selected in the table dropdown.
+                    # st.session_state['quote_items'][idx]['name'] is the OLD name before edit.
+                    
+                    old_name = st.session_state['quote_items'][idx]['name'] if idx < len(st.session_state['quote_items']) else ""
+                    new_name = row['name']
+                    
+                    current_desc = str(row.get('desc', ''))
+                    current_price = float(row.get('price', 0))
+                    
+                    # If name changed to something in our Search List, trigger lookup
+                    if new_name != old_name and new_name in search_opts:
+                        row_data, name_col = find_product_row(new_name, df)
+                        if row_data is not None:
+                            # Update Desc
+                            d_val = ""
+                            d_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
+                            for dc in d_cols:
+                                val = str(row_data[dc])
+                                if val and val.lower() not in ['nan','']: d_val = val; break
+                            current_desc = d_val
+                            
+                            # Update Price
+                            p_val = 0.0
+                            p_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
+                            for pc in p_cols:
+                                try:
+                                    v = str(row_data[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
+                                    if v and v.lower()!='nan': p_val = float(v); break
+                                except: continue
+                            current_price = p_val
+                            
+                            # Default Qty
+                            row['qty'] = 1.0
+                            st.toast(f"Auto-filled: {new_name}")
+
+                    # 2. CALC
+                    q = float(row.get('qty', 1)); p = current_price
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     
                     g = q * p
@@ -424,9 +447,39 @@ def main_app():
                     n = g - di
                     
                     sub_ex += n; tot_disc += di
-                    r = row.to_dict(); r['total'] = n
+                    
+                    # 3. SAVE BACK
+                    r = row.to_dict()
+                    r['name'] = new_name # Persist the new name
+                    r['desc'] = current_desc
+                    r['price'] = current_price
+                    r['qty'] = q
+                    r['total'] = n
                     items_save.append(r)
                 
+                # If we modified data (auto-filled), we need to update session state
+                # But we can't trigger a rerun inside the render loop easily without infinite loop risk unless we check for diffs carefully.
+                # However, Streamlit's data_editor output 'edited' IS the new state. 
+                # We just processed it into 'items_save'. 
+                # Ideally, we update st.session_state['quote_items'] = items_save
+                # But we only want to RERUN if we actually changed desc/price to show the user the new values.
+                
+                # Let's check if we need to force a refresh (only if we did an Auto-Fill)
+                needs_refresh = False
+                if len(items_save) == len(st.session_state['quote_items']):
+                    for i in range(len(items_save)):
+                        # If description or price is different from what was in session state (meaning we updated it via logic above), trigger refresh
+                        if items_save[i]['desc'] != st.session_state['quote_items'][i]['desc'] or \
+                           items_save[i]['price'] != st.session_state['quote_items'][i]['price']:
+                            needs_refresh = True
+                            break
+                
+                # Update State
+                st.session_state['quote_items'] = items_save
+                
+                if needs_refresh:
+                    st.rerun()
+
                 gst = sub_ex*0.10; grand = sub_ex+gst
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Subtotal (Ex GST)", f"${sub_ex:,.2f}")
@@ -465,15 +518,15 @@ def main_app():
                             st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
                             st.session_state['edit_client'] = r['client_name']
                             st.session_state['edit_email'] = r.get('client_email', '')
-                            # Attempt to load phone if available in payload
-                            # If we passed it in save_quote payload but DM didn't save column, it's gone unless we stash it.
-                            # For now, we rely on DM.
+                            # Load phone if available
+                            try: st.session_state['edit_phone'] = r.get('client_phone', '') # This requires saving support in DM to work fully
+                            except: pass
                             st.toast("Loaded!"); time.sleep(1)
                         if c3.button("🗑️ Delete", key=f"d_{r['quote_id']}"):
                             dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
             else: st.info("Empty")
 
-    # 3. UPLOAD
+    # 3. UPLOAD (Same)
     elif menu == "Upload (Direct)":
         st.header("📂 Upload"); c1, c2 = st.columns(2)
         with c1: cats = dm.get_categories(); cs = st.selectbox("Cat", cats if cats else ["Default"])
@@ -491,7 +544,7 @@ def main_app():
                         st.success("Saved"); time.sleep(1); st.rerun()
                     except Exception as e: st.error(str(e))
 
-    # 4. UPDATE
+    # 4. UPDATE (Same)
     elif menu == "Data Update (Direct)":
         st.header("🔄 Update"); cats = dm.get_categories(); cs = st.selectbox("Cat", cats)
         up = st.file_uploader("File"); hh = st.checkbox("Headers?", True, key="uph")
