@@ -232,8 +232,8 @@ def main_app():
                 else:
                     st.info("No product data available or 'category' column missing.")
 
-    # =======================================================
-    # 2. QUOTE GENERATOR (NEW)
+   # =======================================================
+    # 2. QUOTE GENERATOR (UPDATED SEARCH LOGIC)
     # =======================================================
     elif menu == "Quote Generator (New)":
         st.header("📝 Create Quote")
@@ -260,49 +260,111 @@ def main_app():
             # --- TABBED INTERFACE FOR ADDING ITEMS ---
             tab_add_db, tab_add_manual = st.tabs(["Search Database", "➕ Add Custom Item"])
             
-            # A. Search Database
+            # A. Search Database (Improved Logic)
             with tab_add_db:
                 if not df.empty:
-                    # Reuse Search Logic for matching
-                    search_list = df.apply(lambda row: f"{row.iloc[0]} | {row.get('SKU', '') if 'SKU' in row else ''}", axis=1).unique()
+                    # --- 1. REUSE ROBUST LOGIC FROM MAIN TAB ---
+                    def col_has_data(dataframe, col_name):
+                        if col_name not in dataframe.columns: return False
+                        s = dataframe[col_name].astype(str).str.strip()
+                        is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
+                        return not is_empty.all()
+
+                    valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
                     
-                    sel_product = st.selectbox("Find Product", options=sorted(search_list), index=None, placeholder="Type to search product...")
-                    
-                    if sel_product:
-                        # Find the row
-                        # Simple logic: string match the first part
-                        prod_name_guess = sel_product.split('|')[0].strip()
-                        # Get row data
-                        found_rows = df[df.iloc[:,0].astype(str).str.contains(prod_name_guess, regex=False)]
-                        
-                        if not found_rows.empty:
-                            row = found_rows.iloc[0]
-                            # Try to find price
-                            price_guess = 0.0
-                            for col in row.index:
-                                if 'price' in str(col).lower() or 'msrp' in str(col).lower():
-                                    try: 
-                                        price_val = str(row[col]).replace('$', '').replace(',', '')
-                                        price_guess = float(price_val)
-                                        break
-                                    except: pass
+                    if not valid_data_cols:
+                        st.error("Data loaded, but columns appear empty.")
+                    else:
+                        # Find Name Column
+                        name_col = None
+                        for col in valid_data_cols:
+                            if 'product' in col.lower() and 'name' in col.lower():
+                                name_col = col
+                                break
+                        if not name_col:
+                            for col in valid_data_cols:
+                                if 'model' in col.lower():
+                                    name_col = col
+                                    break
+                        if not name_col: name_col = valid_data_cols[0]
+
+                        # Create Clean Search Labels
+                        search_df = df.copy()
+                        forbidden_in_search = [
+                            'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
+                            'date', 'time', 'last_updated', 'timestamp',
+                            'category', 'class', 'group', 'segment' 
+                        ]
+
+                        def make_search_label(row):
+                            main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                            label_parts = [main_name.strip()]
+
+                            for col in valid_data_cols:
+                                if col == name_col: continue
+                                if any(k in col.lower() for k in forbidden_in_search): continue
+                                
+                                val = str(row[col]).strip()
+                                if val and val.lower() not in ['nan', 'none', '']:
+                                    if val not in label_parts:
+                                        label_parts.append(val)
                             
+                            return " | ".join(filter(None, label_parts))
+
+                        search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
+                        search_options = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
+
+                        # --- 2. SEARCH WIDGET ---
+                        sel_label = st.selectbox(
+                            "Find Product", 
+                            options=search_options, 
+                            index=None, 
+                            placeholder="Type Name, SKU or Specs..."
+                        )
+                        
+                        # --- 3. AUTO-FILL DETAILS ---
+                        if sel_label:
+                            # Get the full row data
+                            row = search_df[search_df['Search_Label'] == sel_label].iloc[0]
+                            
+                            # Intelligent Price Detection
+                            price_guess = 0.0
+                            # Look for columns with 'price', 'msrp', 'srp', 'cost'
+                            price_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
+                            if price_cols:
+                                # Pick the first one that looks like a number
+                                for p_col in price_cols:
+                                    try:
+                                        val_str = str(row[p_col]).replace('$', '').replace(',', '').strip()
+                                        if val_str and val_str.lower() != 'nan':
+                                            price_guess = float(val_str)
+                                            break
+                                    except: continue
+
+                            # Intelligent Description Detection
+                            desc_guess = ""
+                            desc_cols = [c for c in df.columns if any(x in c.lower() for x in ['desc', 'spec', 'detail'])]
+                            if desc_cols:
+                                desc_guess = str(row[desc_cols[0]])
+                            
+                            # Display Inputs
+                            st.caption(f"Selected: **{row[name_col]}**")
                             c1, c2, c3 = st.columns(3)
-                            add_qty = c1.number_input("Qty", 1, 100, 1)
+                            add_qty = c1.number_input("Qty", 1, 1000, 1)
                             add_price = c2.number_input("Unit Price", value=price_guess)
                             add_disc = c3.number_input("Discount %", 0, 100, 0)
                             
                             if st.button("Add to Quote", key="btn_add_db"):
                                 item = {
-                                    "name": prod_name_guess,
-                                    "desc": str(row.get('Description', '')),
+                                    "name": str(row[name_col]),
+                                    "desc": desc_guess,
                                     "qty": add_qty,
                                     "price": add_price,
                                     "discount": add_disc,
                                     "total": (add_price * add_qty) * (1 - add_disc/100)
                                 }
                                 st.session_state['quote_items'].append(item)
-                                st.success(f"Added: {prod_name_guess}")
+                                st.success(f"Added: {row[name_col]}")
                                 time.sleep(0.5)
                                 st.rerun()
 
@@ -328,7 +390,6 @@ def main_app():
                                 "total": (m_price * m_qty) * (1 - m_disc/100)
                             }
                             st.session_state['quote_items'].append(item)
-                            # LOGGING THE MANUAL ACTION
                             dm.log_action(st.session_state['user'], "Manual Quote Item", f"Added: {m_name} | ${m_price}")
                             st.success(f"Added Custom: {m_name}")
                             time.sleep(0.5)
@@ -342,10 +403,8 @@ def main_app():
         st.subheader("3. Review & Finalize")
         
         if st.session_state['quote_items']:
-            # Create DF for display
             q_df = pd.DataFrame(st.session_state['quote_items'])
             
-            # Use Data Editor to allow tweaking numbers
             edited_df = st.data_editor(
                 q_df, 
                 num_rows="dynamic", 
@@ -357,21 +416,12 @@ def main_app():
                 key="editor_quote"
             )
             
-            # Recalculate totals based on edits
             final_total = 0
-            # iterate rows to recalc totals in case user edited price/qty
-            # Note: data_editor returns the new state. 
-            # We must be careful to update the 'total' logic if they change qty.
-            # For simplicity in this MVP, we sum the 'total' column, 
-            # but ideally we recalculate: row['qty'] * row['price']
-            
-            # Let's do a safe recalc loop
             items_to_save = []
             for index, row in edited_df.iterrows():
                 line_total = (row['price'] * row['qty']) * (1 - row['discount']/100)
                 final_total += line_total
                 
-                # Update the row data for saving
                 row_data = row.to_dict()
                 row_data['total'] = line_total
                 items_to_save.append(row_data)
@@ -392,8 +442,6 @@ def main_app():
                     }
                     new_id = dm.save_quote(quote_payload, st.session_state['user'])
                     st.success(f"Quote Saved! ID: {new_id}")
-                    
-                    # Optional: Clear state
                     st.session_state['quote_items'] = []
                     time.sleep(2)
                     st.rerun()
@@ -499,3 +547,4 @@ if st.session_state['logged_in']:
     main_app()
 else:
     login_page()
+
