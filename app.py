@@ -10,11 +10,8 @@ from datetime import date
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- HELPER: HTML INVOICE GENERATOR ---
+# --- HELPER: HTML QUOTE GENERATOR ---
 def generate_html_invoice(quote_row):
-    """
-    Generates a clean, professional HTML invoice string.
-    """
     items = json.loads(quote_row['items_json'])
     client = quote_row['client_name']
     qid = quote_row['quote_id']
@@ -115,7 +112,6 @@ def check_login(username, password):
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
-
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
 
 # --- LOGIN PAGE ---
@@ -301,7 +297,7 @@ def main_app():
                     st.info("No product data available or 'category' column missing.")
 
     # =======================================================
-    # 2. QUOTE GENERATOR (NEW SPLIT TABS)
+    # 2. QUOTE GENERATOR (FULL FEATURE)
     # =======================================================
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
@@ -319,8 +315,8 @@ def main_app():
             with c_details:
                 st.subheader("1. Client Details")
                 with st.container(border=True):
-                    q_client = st.text_input("Client Name / Company")
-                    q_email = st.text_input("Client Email")
+                    q_client = st.text_input("Client Name / Company", key="q_client_in")
+                    q_email = st.text_input("Client Email", key="q_email_in")
                     q_date = st.date_input("Date", date.today())
                     q_expire = st.date_input("Expiration Date", date.today())
                     q_terms = st.text_area("Terms & Conditions", "Payment due within 30 days.")
@@ -332,24 +328,21 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
-                        def col_has_data(dataframe, col_name):
+                        # --- Reusing Smart Search Logic for consistency ---
+                        def col_has_data_q(dataframe, col_name):
                             if col_name not in dataframe.columns: return False
                             s = dataframe[col_name].astype(str).str.strip()
                             is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
                             return not is_empty.all()
 
-                        valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
+                        valid_data_cols = [c for c in df.columns if col_has_data_q(df, c)]
+                        
                         if valid_data_cols:
                             name_col = None
                             for col in valid_data_cols:
                                 if 'product' in col.lower() and 'name' in col.lower():
                                     name_col = col
                                     break
-                            if not name_col:
-                                for col in valid_data_cols:
-                                    if 'model' in col.lower():
-                                        name_col = col
-                                        break
                             if not name_col: name_col = valid_data_cols[0]
 
                             search_df = df.copy()
@@ -494,22 +487,38 @@ def main_app():
                 quotes_df = quotes_df.sort_values(by="created_at", ascending=False)
                 
                 for i, row in quotes_df.iterrows():
-                    with st.expander(f"{row['created_at']} | {row['client_name']} | ${row['total_amount']}"):
-                        c1, c2 = st.columns([3, 1])
-                        with c1:
-                            st.write(f"**Quote ID:** {row['quote_id']}")
-                            st.write(f"**Client:** {row['client_name']} ({row['client_email']})")
-                            st.write(f"**Total:** ${float(row['total_amount']):,.2f}")
+                    with st.expander(f"{row['created_at']} | {row['client_name']} | ${float(row['total_amount']):,.2f}"):
+                        c1, c2, c3 = st.columns(3)
                         
-                        with c2:
-                            # GENERATE INVOICE HTML
+                        # 1. Download Button (Correctly Named)
+                        with c1:
                             html_content = generate_html_invoice(row)
                             st.download_button(
-                                label="📄 Download Invoice",
+                                label="📩 Download Quote",
                                 data=html_content,
                                 file_name=f"Quote_{row['quote_id']}.html",
                                 mime="text/html"
                             )
+                        
+                        # 2. Edit Button
+                        with c2:
+                            if st.button("✏️ Edit Quote", key=f"edit_{row['quote_id']}"):
+                                # Load items back into session state
+                                st.session_state['quote_items'] = json.loads(row['items_json'])
+                                st.toast(f"Quote {row['quote_id']} loaded for editing!", icon="📝")
+                                # Note: Does not switch tabs automatically in Streamlit, but data is ready
+                                st.info("Items loaded into 'Create New Quote' tab.")
+                        
+                        # 3. Delete Button
+                        with c3:
+                            if st.button("🗑️ Delete", key=f"del_{row['quote_id']}"):
+                                success = dm.delete_quote(row['quote_id'], st.session_state['user'])
+                                if success:
+                                    st.success("Deleted!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("Delete failed.")
             else:
                 st.info("No quotes found.")
 
