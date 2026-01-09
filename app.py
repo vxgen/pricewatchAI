@@ -41,7 +41,6 @@ def create_pdf(quote_row):
     total_discount = 0
     
     for item in items:
-        # Re-verify calculations based on item data
         qty = float(item.get('qty', 0))
         price = float(item.get('price', 0))
         d_val = float(item.get('discount_val', 0))
@@ -52,7 +51,7 @@ def create_pdf(quote_row):
         if d_type == '%':
             disc_amt = gross * (d_val / 100)
         else:
-            disc_amt = d_val # Flat discount
+            disc_amt = d_val
             
         net_line = gross - disc_amt
         
@@ -107,7 +106,6 @@ def create_pdf(quote_row):
         qty = float(item.get('qty', 0))
         price = float(item.get('price', 0))
         
-        # Re-calc for display
         d_val = float(item.get('discount_val', 0))
         d_type = item.get('discount_type', '%')
         gross = qty * price
@@ -214,7 +212,7 @@ def main_app():
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
     # =======================================================
-    # 1. PRODUCT SEARCH & BROWSE
+    # 1. PRODUCT SEARCH & BROWSE (ORIGINAL LOGIC)
     # =======================================================
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search & Browse")
@@ -238,6 +236,7 @@ def main_app():
 
         with tab_search:
             if not df.empty:
+                # --- ORIGINAL HELPER ---
                 def col_has_data(dataframe, col_name):
                     if col_name not in dataframe.columns: return False
                     s = dataframe[col_name].astype(str).str.strip()
@@ -249,20 +248,19 @@ def main_app():
                 if not valid_data_cols:
                     st.error("Data loaded, but columns appear empty.")
                 else:
+                    # Find Name
                     name_col = None
                     for col in valid_data_cols:
                         if 'product' in col.lower() and 'name' in col.lower():
-                            name_col = col
-                            break
+                            name_col = col; break
                     if not name_col:
                         for col in valid_data_cols:
-                            if 'model' in col.lower():
-                                name_col = col
-                                break
+                            if 'model' in col.lower(): name_col = col; break
                     if not name_col: name_col = valid_data_cols[0]
 
                     search_df = df.copy()
-
+                    
+                    # Original Forbidden list
                     forbidden_in_search = [
                         'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
                         'date', 'time', 'last_updated', 'timestamp',
@@ -272,16 +270,12 @@ def main_app():
                     def make_search_label(row):
                         main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
                         label_parts = [main_name.strip()]
-
                         for col in valid_data_cols:
                             if col == name_col: continue
                             if any(k in col.lower() for k in forbidden_in_search): continue
-                            
                             val = str(row[col]).strip()
                             if val and val.lower() not in ['nan', 'none', '']:
-                                if val not in label_parts:
-                                    label_parts.append(val)
-                        
+                                if val not in label_parts: label_parts.append(val)
                         return " | ".join(filter(None, label_parts))
 
                     search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
@@ -363,7 +357,7 @@ def main_app():
                     st.info("No product data available or 'category' column missing.")
 
     # =======================================================
-    # 2. QUOTE GENERATOR (FULL FEATURE)
+    # 2. QUOTE GENERATOR (UPDATED)
     # =======================================================
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
@@ -391,41 +385,68 @@ def main_app():
                 
                 with t_db:
                     if not df.empty:
-                        # Reusing Smart Search Logic
-                        valid_data_cols = [c for c in df.columns if not df[c].astype(str).str.strip().eq('').all()]
+                        # --- 1. USE SAME ROBUST LOGIC AS MAIN TAB ---
+                        def col_has_data(dataframe, col_name):
+                            if col_name not in dataframe.columns: return False
+                            s = dataframe[col_name].astype(str).str.strip()
+                            is_empty = s.str.lower().isin(['nan', 'none', '', 'nat'])
+                            return not is_empty.all()
+
+                        valid_data_cols = [c for c in df.columns if col_has_data(df, c)]
+                        
                         if valid_data_cols:
-                            name_col = valid_data_cols[0]
+                            name_col = None
                             for col in valid_data_cols:
-                                if 'product' in col.lower() or 'model' in col.lower():
-                                    name_col = col; break
-                            
+                                if 'product' in col.lower() and 'name' in col.lower(): name_col = col; break
+                            if not name_col:
+                                for col in valid_data_cols:
+                                    if 'model' in col.lower(): name_col = col; break
+                            if not name_col: name_col = valid_data_cols[0]
+
                             search_df = df.copy()
-                            forbidden = ['price', 'cost', 'date', 'category']
-                            
-                            # Build Smart Label
-                            def make_lbl(row):
-                                main = str(row[name_col]) if pd.notnull(row[name_col]) else ""
-                                parts = [main.strip()]
+                            # EXACT same forbidden list as main tab to ensure clean dropdown
+                            forbidden_in_search = [
+                                'price', 'cost', 'srp', 'msrp', 'rrp', 'margin', 
+                                'date', 'time', 'last_updated', 'timestamp',
+                                'category', 'class', 'group', 'segment' 
+                            ]
+
+                            def make_search_label(row):
+                                main_name = str(row[name_col]) if pd.notnull(row[name_col]) else ""
+                                label_parts = [main_name.strip()]
                                 for col in valid_data_cols:
                                     if col == name_col: continue
-                                    if any(k in col.lower() for k in forbidden): continue
+                                    if any(k in col.lower() for k in forbidden_in_search): continue
                                     val = str(row[col]).strip()
                                     if val and val.lower() not in ['nan', 'none', '']:
-                                        if val not in parts: parts.append(val)
-                                return " | ".join(filter(None, parts))
+                                        if val not in label_parts: label_parts.append(val)
+                                return " | ".join(filter(None, label_parts))
 
-                            search_df['Label'] = search_df.apply(make_lbl, axis=1)
-                            opts = sorted(search_df['Label'].unique().tolist())
-                            
+                            search_df['Search_Label'] = search_df.apply(make_search_label, axis=1)
+                            opts = sorted([x for x in search_df['Search_Label'].unique().tolist() if x])
+
                             sel_lbl = st.selectbox("Find Product", options=opts, index=None, placeholder="Type Name...")
                             
                             if sel_lbl:
-                                row = search_df[search_df['Label'] == sel_lbl].iloc[0]
+                                row = search_df[search_df['Search_Label'] == sel_lbl].iloc[0]
                                 price_guess = 0.0
-                                for c in df.columns:
-                                    if any(x in c.lower() for x in ['price','msrp','cost']):
-                                        try: price_guess = float(str(row[c]).replace('$','').replace(',','')); break
-                                        except: pass
+                                
+                                # --- IMPROVED PRICE DETECTION ---
+                                # 1. Find columns with "price" keywords
+                                price_cols = [c for c in df.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
+                                
+                                # 2. Loop through and try to clean the value
+                                for p_col in price_cols:
+                                    val_raw = str(row[p_col])
+                                    # Remove non-numeric characters except dot
+                                    # e.g., "A$2,457.00" -> "2457.00"
+                                    val_clean = val_raw.replace('A$', '').replace('$', '').replace(',', '').strip()
+                                    try:
+                                        if val_clean and val_clean.lower() != 'nan':
+                                            price_guess = float(val_clean)
+                                            break # Stop once we find a valid number
+                                    except:
+                                        continue
                                 
                                 c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
                                 aq = c1.number_input("Qty", 1, 1000, 1)
@@ -435,7 +456,6 @@ def main_app():
                                 ad_type = c4.selectbox("Type", ["%", "$"])
                                 
                                 if st.button("Add to Quote", key="btn_add_db"):
-                                    # Logic to save item
                                     item = {
                                         "name": str(row[name_col]),
                                         "desc": "",
@@ -443,7 +463,6 @@ def main_app():
                                         "price": ap,
                                         "discount_val": ad_val,
                                         "discount_type": ad_type,
-                                        # Placeholder total, recalculate in review
                                         "total": 0 
                                     }
                                     st.session_state['quote_items'].append(item)
@@ -476,17 +495,19 @@ def main_app():
             if st.session_state['quote_items']:
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Allow editing
+                # --- FIXED DATA EDITOR ---
+                # Ensuring types are set correctly so users can EDIT them
                 edited_df = st.data_editor(
                     q_df, 
                     num_rows="dynamic", 
                     use_container_width=True, 
                     key="editor_quote",
                     column_config={
-                        "price": st.column_config.NumberColumn("Unit Price", format="$%.2f"),
-                        "total": st.column_config.NumberColumn("Net Total (Calculated)", disabled=True),
-                        "discount_val": st.column_config.NumberColumn("Discount"),
-                        "discount_type": st.column_config.SelectboxColumn("Type", options=["%", "$"])
+                        "price": st.column_config.NumberColumn("Unit Price", format="$%.2f", required=True),
+                        "qty": st.column_config.NumberColumn("Qty", min_value=1, step=1, required=True),
+                        "discount_val": st.column_config.NumberColumn("Discount Value", min_value=0.0),
+                        "discount_type": st.column_config.SelectboxColumn("Type", options=["%", "$"], required=True),
+                        "total": st.column_config.NumberColumn("Net Total", format="$%.2f", disabled=True)
                     }
                 )
                 
