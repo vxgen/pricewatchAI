@@ -16,6 +16,7 @@ def get_client():
 
 def get_sheet():
     client = get_client()
+    # REPLACE WITH YOUR ACTUAL SHEET URL
     url = "https://docs.google.com/spreadsheets/d/1KG8qWTYLa6GEWByYIg2vz3bHrGdW3gvqD_detwhyj7k/edit"
     return client.open_by_url(url)
 
@@ -48,6 +49,7 @@ def get_all_products_df():
     for cat in cats:
         try:
             ws = sh.worksheet(cat)
+            # Use get_all_values for robust reading (handles missing headers gracefully)
             data = ws.get_all_values()
             
             if data and len(data) > 1:
@@ -78,6 +80,17 @@ def get_quotes():
         return pd.DataFrame()
 
 # --- WRITE FUNCTIONS ---
+
+def register_user(username, password, email):
+    try:
+        ws = get_sheet().worksheet("users")
+    except:
+        sh = get_sheet()
+        ws = sh.add_worksheet(title="users", rows=100, cols=5)
+        ws.append_row(["username", "password", "email", "status", "role"])
+        
+    ws.append_row([username, password, email, "pending", "user"])
+    get_users.clear()
 
 def log_action(user, action, details):
     try:
@@ -114,6 +127,7 @@ def save_products_dynamic(df, category, user):
     add_category(category, user)
     ws = ensure_category_sheet_exists(category)
     
+    # Check if sheet has real data
     existing_data = ws.get_all_values()
     is_effectively_empty = False
     if not existing_data:
@@ -136,6 +150,7 @@ def save_products_dynamic(df, category, user):
 
 def update_products_dynamic(new_df, category, user, key_column):
     ws = ensure_category_sheet_exists(category)
+    
     try:
         data = ws.get_all_values()
         if data and len(data) > 1:
@@ -151,8 +166,10 @@ def update_products_dynamic(new_df, category, user, key_column):
     if not current_df.empty and key_column in current_df.columns and key_column in new_df.columns:
         current_keys = set(current_df[key_column].astype(str))
         new_keys = set(new_df[key_column].astype(str))
+        
         eol_keys = current_keys - new_keys
         to_add_keys = new_keys - current_keys
+        
         eol_count = len(eol_keys)
         new_count = len(to_add_keys)
         
@@ -173,8 +190,10 @@ def update_products_dynamic(new_df, category, user, key_column):
     clean_df = new_df.astype(str)
     data_to_write = [clean_df.columns.tolist()] + clean_df.values.tolist()
     ws.update(values=data_to_write, range_name='A1')
+    
     log_action(user, "Update Data", f"Category: {category}")
     get_all_products_df.clear()
+    
     return {"new": new_count, "eol": eol_count, "total": len(new_df)}
 
 # --- QUOTE FUNCTIONS ---
@@ -200,7 +219,7 @@ def save_quote(quote_data, user):
         quote_data.get("client_name", ""),
         quote_data.get("client_email", ""),
         "Draft",
-        quote_data.get("total_amount", 0), # This will be the Grand Total (Inc GST)
+        quote_data.get("total_amount", 0),
         json.dumps(quote_data.get("items", []))
     ]
     
@@ -210,15 +229,19 @@ def save_quote(quote_data, user):
     return quote_id
 
 def delete_quote(quote_id, user):
+    """Deletes a quote row based on ID"""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
+        
         if not data: return False
-        
         headers = data[0]
-        try: idx = headers.index("quote_id")
-        except: return False
+        try: 
+            idx = headers.index("quote_id")
+        except: 
+            return False
         
+        # Find row index to delete (1-based for gspread)
         for i, row in enumerate(data):
             if i == 0: continue
             if len(row) > idx and row[idx] == str(quote_id):
@@ -229,13 +252,3 @@ def delete_quote(quote_id, user):
     except:
         return False
     return False
-
-def register_user(username, password, email):
-    try:
-        ws = get_sheet().worksheet("users")
-    except:
-        sh = get_sheet()
-        ws = sh.add_worksheet(title="users", rows=100, cols=5)
-        ws.append_row(["username", "password", "email", "status", "role"])
-    ws.append_row([username, password, email, "pending", "user"])
-    get_users.clear()
