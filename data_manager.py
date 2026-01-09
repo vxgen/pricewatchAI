@@ -4,6 +4,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 from datetime import datetime
 import time
+import json # Added for handling quote line items
 
 # --- CONNECT (CACHED) ---
 @st.cache_resource
@@ -123,15 +124,12 @@ def save_products_dynamic(df, category, user):
     add_category(category, user)
     ws = ensure_category_sheet_exists(category)
     
-    # Check if sheet has ANY real data (not just empty strings)
     existing_data = ws.get_all_values()
     
     is_effectively_empty = False
     if not existing_data:
         is_effectively_empty = True
     else:
-        # Check if it's just a blank row or list of empty strings like [['', '', '']]
-        # Flatten the list and check if there is any non-empty content
         flat_data = [item for sublist in existing_data for item in sublist if item.strip()]
         if not flat_data:
             is_effectively_empty = True
@@ -139,17 +137,10 @@ def save_products_dynamic(df, category, user):
     clean_df = df.astype(str)
     
     if is_effectively_empty:
-        # SHEET IS EMPTY: Write Headers + Data
-        ws.clear() # Clear just in case there are ghost rows
-        
-        # Prepend headers to the values
+        ws.clear() 
         data_to_write = [clean_df.columns.tolist()] + clean_df.values.tolist()
         ws.update(values=data_to_write, range_name='A1')
     else:
-        # SHEET EXISTS: Append only Data (Headers assumed to exist)
-        # Note: If your intent is to ALWAYS replace the table when uploading, 
-        # you should use the logic above (ws.clear() + update).
-        # Currently, this block behaves as "Append to existing list".
         ws.append_rows(clean_df.values.tolist())
     
     log_action(user, "Upload Direct", f"Category: {category}, Rows: {len(df)}")
@@ -207,3 +198,40 @@ def update_products_dynamic(new_df, category, user, key_column):
     get_all_products_df.clear()
     
     return {"new": new_count, "eol": eol_count, "total": len(new_df)}
+
+# --- NEW: QUOTE FUNCTIONS ---
+
+def save_quote(quote_data, user):
+    """
+    Saves a quote to the 'quotes' sheet.
+    quote_data: dict containing client_name, items (json), total, etc.
+    """
+    sh = get_sheet()
+    try:
+        ws = sh.worksheet("quotes")
+    except:
+        ws = sh.add_worksheet(title="quotes", rows=1000, cols=10)
+        # Create Headers
+        ws.append_row([
+            "quote_id", "created_at", "created_by", 
+            "client_name", "client_email", "status", 
+            "total_amount", "items_json"
+        ])
+    
+    # Generate a simple ID based on timestamp
+    quote_id = f"Q-{int(time.time())}"
+    
+    row = [
+        quote_id,
+        str(datetime.now()),
+        user,
+        quote_data.get("client_name", ""),
+        quote_data.get("client_email", ""),
+        "Draft", # Default status
+        quote_data.get("total_amount", 0),
+        json.dumps(quote_data.get("items", [])) # Store items as JSON string
+    ]
+    
+    ws.append_row(row)
+    log_action(user, "Created Quote", f"ID: {quote_id}, Client: {quote_data.get('client_name')}")
+    return quote_id
