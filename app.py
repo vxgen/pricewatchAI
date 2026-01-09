@@ -10,13 +10,13 @@ import time
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- 1. SHARED HELPERS & LOGIC ---
+# --- 1. SHARED HELPERS ---
 
 def normalize_items(items):
     """Ensures all items have valid keys/types."""
     clean = []
-    for i in items:
-        n = i.copy()
+    for item in items:
+        n = item.copy()
         try: n['qty'] = float(n.get('qty', 1))
         except: n['qty'] = 1.0
         try: n['price'] = float(n.get('price', 0))
@@ -26,7 +26,7 @@ def normalize_items(items):
         
         if 'discount_type' not in n: n['discount_type'] = '%'
         if 'desc' not in n: n['desc'] = ""
-        if 'name' not in n: n['name'] = "Unknown"
+        if 'name' not in n or pd.isna(n['name']): n['name'] = ""
         
         # Calc Total
         g = n['qty'] * n['price']
@@ -35,24 +35,19 @@ def normalize_items(items):
         clean.append(n)
     return clean
 
-# --- CORE SEARCH LABEL GENERATOR (CENTRALIZED) ---
 def generate_search_labels(df):
-    """
-    Returns a dataframe with a 'Search_Label' column.
-    This ensures Section 2 and Section 3 use IDENTICAL logic.
-    """
-    if df.empty: return df
+    """Generates the 'Long String' labels for searching."""
+    if df.empty: return df, None
     
     # 1. Identify valid columns
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
     valid_cols = [c for c in df.columns if col_ok(df, c)]
-    if not valid_cols: return df
+    if not valid_cols: return df, None
     
     name_col = valid_cols[0]
     for c in valid_cols:
         if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
         
-    # 2. Forbidden words for the label string
     forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin']
     
     def mk_lbl(row):
@@ -69,8 +64,8 @@ def generate_search_labels(df):
     df['Search_Label'] = df.apply(mk_lbl, axis=1)
     return df, name_col
 
-def get_product_from_label(label, df_with_labels, name_col):
-    """Extracts clean data from the DF using the label."""
+def extract_product_data(label, df_with_labels, name_col):
+    """Parses a Long Label back into Name, Desc, Price."""
     if not label or df_with_labels.empty: return None
     
     # Find match
@@ -93,14 +88,13 @@ def get_product_from_label(label, df_with_labels, name_col):
         
     # 3. Description
     p_desc = ""
-    # Priority: Explicit columns
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
         val = str(row[dc])
         if val and val.lower() not in ['nan', 'none', '']:
             p_desc = val; break
             
-    # Fallback: Construct from other columns if empty
+    # Fallback Desc
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -122,17 +116,17 @@ def on_product_search_change():
         try:
             df = dm.get_all_products_df()
             df_lbl, name_col = generate_search_labels(df)
-            data = get_product_from_label(lbl, df_lbl, name_col)
+            data = extract_product_data(lbl, df_lbl, name_col)
             
             if data:
                 st.session_state['input_name'] = data['name']
                 st.session_state['input_desc'] = data['desc']
                 st.session_state['input_price'] = data['price']
-                st.session_state['input_qty'] = 1.0 # Default
+                st.session_state['input_qty'] = 1.0
         except Exception as e: print(e)
 
 def add_line_item_callback():
-    """Add Item Button Callback"""
+    """Section 2 Button Callback"""
     name = st.session_state.get('input_name', '')
     if not name:
         st.toast("Name required!", icon="⚠️"); return
@@ -246,7 +240,7 @@ if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'user' not in st.session_state: st.session_state['user'] = ""
 if 'quote_items' not in st.session_state: st.session_state['quote_items'] = []
 
-# Init Session for Inputs
+# Init Session
 if 'input_name' not in st.session_state: st.session_state['input_name'] = ""
 if 'input_desc' not in st.session_state: st.session_state['input_desc'] = ""
 if 'input_price' not in st.session_state: st.session_state['input_price'] = 0.0
@@ -266,7 +260,7 @@ def main_app():
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
     menu = st.sidebar.radio("Navigate", ["Product Search & Browse", "Quote Generator", "Upload (Direct)", "Data Update (Direct)"])
     
-    # --- 1. SEARCH ---
+    # 1. SEARCH
     if menu == "Product Search & Browse":
         st.header("🔎 Product Search")
         if st.button("Refresh"): dm.get_all_products_df.clear(); st.rerun()
@@ -276,9 +270,11 @@ def main_app():
         tab1, tab2 = st.tabs(["Search", "Browse"])
         with tab1:
             if not df.empty:
-                # Use shared logic
+                # Use centralized label generator
                 df_lbl, name_col = generate_search_labels(df)
-                # Drop rows with no label (handled in gen)
+                if df_lbl.empty: st.warning("No valid data"); st.stop()
+                
+                # Filter out empty labels
                 df_lbl = df_lbl.dropna(subset=['Search_Label'])
                 opts = sorted(df_lbl['Search_Label'].unique().tolist())
                 
@@ -291,7 +287,6 @@ def main_app():
                     res = df_lbl[df_lbl['Search_Label'] == sel]
                     for i, r in res.iterrows():
                         with st.expander(f"📦 {r[name_col]}", expanded=True):
-                            # Display
                             hidden = ['price','cost','srp','msrp','search_label']
                             all_c = res.columns.tolist()
                             price_c = [c for c in all_c if any(k in c.lower() for k in hidden) and c!='Search_Label']
@@ -313,7 +308,7 @@ def main_app():
                     cd = df[df['category'] == cs]
                     st.dataframe(cd, use_container_width=True)
 
-    # --- 2. QUOTE ---
+    # 2. QUOTE
     elif menu == "Quote Generator":
         st.header("📝 Quotes")
         tab_create, tab_hist = st.tabs(["Create Quote", "History"])
@@ -322,7 +317,18 @@ def main_app():
             try: df = dm.get_all_products_df()
             except: df = pd.DataFrame()
             
-            # SECTION 1: CLIENT
+            # Prepare Labels
+            search_opts = []
+            df_lbl = pd.DataFrame()
+            name_col = None
+            
+            if not df.empty:
+                df_lbl, name_col = generate_search_labels(df)
+                if not df_lbl.empty:
+                    df_lbl = df_lbl.dropna(subset=['Search_Label'])
+                    search_opts = sorted(df_lbl['Search_Label'].unique().tolist())
+
+            # 1. CLIENT
             st.subheader("1. Client Details")
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
@@ -335,20 +341,10 @@ def main_app():
 
             st.divider()
 
-            # SECTION 2: ADD ITEM
+            # 2. ADD ITEM
             st.subheader("2. Add Line Item")
             
-            # Prepare Shared Labels
-            search_opts = []
-            df_lbl = pd.DataFrame()
-            name_col = None
-            if not df.empty:
-                df_lbl, name_col = generate_search_labels(df)
-                if not df_lbl.empty:
-                    df_lbl = df_lbl.dropna(subset=['Search_Label'])
-                    search_opts = sorted(df_lbl['Search_Label'].unique().tolist())
-            
-            # Search Box
+            # Section 2 Search
             st.selectbox(
                 "Search Database (Auto-fill)", options=search_opts, index=None, 
                 key="q_search_product", on_change=on_product_search_change
@@ -367,16 +363,17 @@ def main_app():
 
             st.divider()
             
-            # SECTION 3: REVIEW (EDIT & AUTO-DISTRIBUTE)
+            # 3. REVIEW
             st.subheader("3. Review Items")
             
             if st.session_state['quote_items']:
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Dropdown Options for Table (Existing Names + All Search Labels)
-                curr_names = q_df['name'].unique().tolist()
-                comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
+                # Combine Options for Table Dropdown
+                # We include search_opts (Long Labels) AND current short names to handle custom items
+                current_names = q_df['name'].unique().tolist()
+                comb_opts = sorted(list(set(search_opts + current_names))) if search_opts else current_names
                 
                 edited = st.data_editor(
                     q_df,
@@ -384,7 +381,7 @@ def main_app():
                     use_container_width=True,
                     key="editor_quote",
                     column_config={
-                        "name": st.column_config.SelectboxColumn("Item (Select to Auto-fill)", options=comb_opts, width="large"),
+                        "name": st.column_config.SelectboxColumn("Item (Select to Auto-fill)", options=comb_opts, required=True, width="large"),
                         "desc": st.column_config.TextColumn("Description", width="medium"),
                         "qty": st.column_config.NumberColumn("Qty", min_value=1, required=True),
                         "price": st.column_config.NumberColumn("Price", format="$%.2f", required=True),
@@ -394,40 +391,40 @@ def main_app():
                     }
                 )
                 
-                # --- AUTO-DISTRIBUTE LOGIC ---
-                sub_ex = 0; tot_disc = 0; items_save = []; has_changes = False
+                # --- AUTO-DISTRIBUTE INTERCEPTOR ---
+                items_save = []; has_changes = False
+                sub_ex = 0; tot_disc = 0
                 
                 for idx, row in edited.iterrows():
-                    # 1. Detect if name is a 'Search Label' (contains pipe | and is in our opts)
-                    # and if we haven't already parsed it (simple check: name still has pipe)
+                    # Check if the name in the table matches a "Long Label" (Search Option)
+                    # If it does, we assume it's a fresh selection and needs parsing.
                     curr_name = row['name']
                     
-                    if curr_name in search_opts and "|" in curr_name:
-                        # This means user selected a label from dropdown but it hasn't been split yet
-                        data = get_product_from_label(curr_name, df_lbl, name_col)
+                    # Logic: If name is in search_opts, it's a Long String. 
+                    # If it's a long string, we parse it into short name + desc + price.
+                    if curr_name in search_opts:
+                        data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
+                            # OVERWRITE the row data with extracted data
                             row['name'] = data['name']
                             row['desc'] = data['desc']
                             row['price'] = data['price']
-                            row['qty'] = 1.0
+                            row['qty'] = 1.0 # Default Qty
                             has_changes = True
                     
-                    # 2. Calc
+                    # Calc
                     q = float(row.get('qty', 1)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
-                    
-                    g = q * p
-                    di = g * (d/100) if t == '%' else d
-                    n = g - di
-                    
+                    g = q*p
+                    di = g*(d/100) if t=='%' else d
+                    n = g-di
                     sub_ex += n; tot_disc += di
+                    
                     r = row.to_dict(); r['total'] = n
                     items_save.append(r)
                 
-                # Update State
+                # Save State & Rerun if we auto-filled
                 st.session_state['quote_items'] = items_save
-                
-                # Force refresh if we autofilled to show clean data
                 if has_changes: st.rerun()
 
                 gst = sub_ex*0.10; grand = sub_ex+gst
@@ -475,7 +472,7 @@ def main_app():
                             dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
             else: st.info("Empty")
 
-    # 3. UPLOAD (Same)
+    # 3. UPLOAD
     elif menu == "Upload (Direct)":
         st.header("📂 Upload"); c1, c2 = st.columns(2)
         with c1: cats = dm.get_categories(); cs = st.selectbox("Cat", cats if cats else ["Default"])
@@ -493,7 +490,7 @@ def main_app():
                         st.success("Saved"); time.sleep(1); st.rerun()
                     except Exception as e: st.error(str(e))
 
-    # 4. UPDATE (Same)
+    # 4. UPDATE
     elif menu == "Data Update (Direct)":
         st.header("🔄 Update"); cats = dm.get_categories(); cs = st.selectbox("Cat", cats)
         up = st.file_uploader("File"); hh = st.checkbox("Headers?", True, key="uph")
