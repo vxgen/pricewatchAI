@@ -324,9 +324,10 @@ def main_app():
             st.subheader("1. Client Details")
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
-                q_client = c1.text_input("Client Name", value=st.session_state.get('edit_client', ''))
-                q_email = c2.text_input("Client Email", value=st.session_state.get('edit_email', ''))
-                q_phone = c3.text_input("Client Phone", value=st.session_state.get('edit_phone', '')) 
+                # ADDED KEYS HERE TO PERSIST DATA ACROSS RERUNS
+                q_client = c1.text_input("Client Name", key="q_client_input")
+                q_email = c2.text_input("Client Email", key="q_email_input")
+                q_phone = c3.text_input("Client Phone", key="q_phone_input") 
                 c4, c5 = st.columns(2)
                 q_date = c4.date_input("Date", date.today())
                 q_expire = c5.date_input("Expires", date.today())
@@ -384,7 +385,7 @@ def main_app():
                     }
                 )
                 
-                # --- LOGIC TO INTERCEPT & FIX TABLE ---
+                # --- AUTO-DISTRIBUTE LOGIC ---
                 items_save = []; trigger_refresh = False
                 sub_ex = 0; tot_disc = 0
                 
@@ -402,7 +403,7 @@ def main_app():
                             # FLAG TO RESET TABLE
                             trigger_refresh = True
                     
-                    # Normal Calc
+                    # Calc
                     q = float(row.get('qty', 1)); p = float(row.get('price', 0))
                     d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q * p
@@ -430,14 +431,19 @@ def main_app():
                 
                 c_a1, c_a2 = st.columns([1, 4])
                 if c_a1.button("💾 Save Quote", type="primary"):
-                    if not q_client: st.error("Name req.")
+                    # Use keys to check inputs
+                    if not st.session_state.get("q_client_input"): st.error("Name req.")
                     else:
                         payload = {
-                            "client_name": q_client, "client_email": q_email, "client_phone": q_phone,
+                            "client_name": st.session_state.get("q_client_input"),
+                            "client_email": st.session_state.get("q_email_input"),
+                            "client_phone": st.session_state.get("q_phone_input"),
                             "total_amount": grand, "expiration_date": str(q_expire), "items": items_save
                         }
                         dm.save_quote(payload, st.session_state['user'])
                         st.success("Saved!"); st.session_state['quote_items'] = []; st.session_state['input_name'] = ""
+                        # Optionally clear client info? 
+                        # st.session_state['q_client_input'] = "" 
                         time.sleep(1); st.rerun()
                 if c_a2.button("Clear"): st.session_state['quote_items'] = []; st.rerun()
             else: st.info("No items.")
@@ -457,10 +463,12 @@ def main_app():
                         except: c1.error("Error")
                         if c2.button("✏️ Edit", key=f"e_{r['quote_id']}"):
                             st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
-                            st.session_state['edit_client'] = r['client_name']
-                            st.session_state['edit_email'] = r.get('client_email', '')
-                            try: st.session_state['edit_phone'] = r.get('client_phone', '')
-                            except: pass
+                            
+                            # PRE-FILL KEYS FOR EDITING
+                            st.session_state['q_client_input'] = r['client_name']
+                            st.session_state['q_email_input'] = r.get('client_email', '')
+                            st.session_state['q_phone_input'] = r.get('client_phone', '')
+                            
                             st.toast("Loaded!"); time.sleep(1)
                         if c3.button("🗑️ Delete", key=f"d_{r['quote_id']}"):
                             dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
