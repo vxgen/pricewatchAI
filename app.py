@@ -28,7 +28,7 @@ def normalize_items(items):
         if 'desc' not in n: n['desc'] = ""
         if 'name' not in n or pd.isna(n['name']): n['name'] = ""
         
-        # Calc Total
+        # Calc Total (Excl GST line total)
         g = n['qty'] * n['price']
         d = g * (n['discount_val']/100) if n['discount_type'] == '%' else n['discount_val']
         n['total'] = g - d
@@ -142,6 +142,42 @@ def add_line_item_callback():
     st.session_state['input_price'] = 0.0; st.session_state['input_qty'] = 1.0
     st.session_state['q_search_product'] = None
     st.toast("Item Added!")
+
+def save_quote_callback():
+    """SAFE SAVE: Runs before render to prevent API errors."""
+    # 1. Validation
+    if not st.session_state.get("q_client_input"):
+        st.toast("Client Name Required!", icon="⚠️")
+        return
+
+    # 2. Get Items
+    items = st.session_state.get('quote_items', [])
+    if not items:
+        st.toast("No items to save!", icon="⚠️")
+        return
+        
+    # 3. Calculate Grand Total (Ex GST sum * 1.1)
+    sub_ex = sum(i.get('total', 0) for i in items)
+    grand_total = sub_ex * 1.10
+    
+    # 4. Prepare Payload
+    payload = {
+        "client_name": st.session_state.get("q_client_input"),
+        "client_email": st.session_state.get("q_email_input"),
+        "client_phone": st.session_state.get("q_phone_input"),
+        "total_amount": grand_total,
+        "expiration_date": str(st.session_state.get("q_expire_input")),
+        "items": items
+    }
+    
+    # 5. Save to DB
+    dm.save_quote(payload, st.session_state['user'])
+    
+    # 6. Clear Inputs Safely
+    st.session_state['quote_items'] = []
+    st.session_state['input_name'] = ""
+    
+    st.toast("Quote Saved Successfully!", icon="✅")
 
 # --- 3. PDF ENGINE ---
 class QuotePDF(FPDF):
@@ -324,13 +360,12 @@ def main_app():
             st.subheader("1. Client Details")
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
-                # ADDED KEYS HERE TO PERSIST DATA ACROSS RERUNS
                 q_client = c1.text_input("Client Name", key="q_client_input")
                 q_email = c2.text_input("Client Email", key="q_email_input")
                 q_phone = c3.text_input("Client Phone", key="q_phone_input") 
                 c4, c5 = st.columns(2)
-                q_date = c4.date_input("Date", date.today())
-                q_expire = c5.date_input("Expires", date.today())
+                q_date = c4.date_input("Date", date.today(), key="q_date_input")
+                q_expire = c5.date_input("Expires", date.today(), key="q_expire_input")
 
             st.divider()
 
@@ -430,21 +465,10 @@ def main_app():
                 m4.metric("Grand Total", f"${grand:,.2f}")
                 
                 c_a1, c_a2 = st.columns([1, 4])
-                if c_a1.button("💾 Save Quote", type="primary"):
-                    # Use keys to check inputs
-                    if not st.session_state.get("q_client_input"): st.error("Name req.")
-                    else:
-                        payload = {
-                            "client_name": st.session_state.get("q_client_input"),
-                            "client_email": st.session_state.get("q_email_input"),
-                            "client_phone": st.session_state.get("q_phone_input"),
-                            "total_amount": grand, "expiration_date": str(q_expire), "items": items_save
-                        }
-                        dm.save_quote(payload, st.session_state['user'])
-                        st.success("Saved!"); st.session_state['quote_items'] = []; st.session_state['input_name'] = ""
-                        # Optionally clear client info? 
-                        # st.session_state['q_client_input'] = "" 
-                        time.sleep(1); st.rerun()
+                
+                # SAVE BUTTON (USES CALLBACK)
+                c_a1.button("💾 Save Quote", type="primary", on_click=save_quote_callback)
+                
                 if c_a2.button("Clear"): st.session_state['quote_items'] = []; st.rerun()
             else: st.info("No items.")
 
