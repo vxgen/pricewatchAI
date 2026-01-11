@@ -12,23 +12,31 @@ st.set_page_config(page_title="Product Check App", layout="wide")
 
 # --- 1. SHARED HELPERS ---
 
+def safe_float(val):
+    """Safely converts string to float, handling symbols and empty values."""
+    try:
+        clean = str(val).replace('$', '').replace(',', '').strip()
+        if not clean: return 0.0
+        return float(clean)
+    except:
+        return 0.0
+
 def normalize_items(items):
     """Ensures all items have valid keys/types."""
     clean = []
     for item in items:
         n = item.copy()
-        try: n['qty'] = float(n.get('qty', 1))
-        except: n['qty'] = 1.0
-        try: n['price'] = float(n.get('price', 0))
-        except: n['price'] = 0.0
-        try: n['discount_val'] = float(n.get('discount_val', 0))
-        except: n['discount_val'] = 0.0
+        n['qty'] = safe_float(n.get('qty', 1))
+        if n['qty'] == 0: n['qty'] = 1.0 # Default to 1 if 0 or fail
+        
+        n['price'] = safe_float(n.get('price', 0))
+        n['discount_val'] = safe_float(n.get('discount_val', 0))
         
         if 'discount_type' not in n: n['discount_type'] = '%'
         if 'desc' not in n: n['desc'] = ""
         if 'name' not in n or pd.isna(n['name']): n['name'] = ""
         
-        # Calc Total (Excl GST line total)
+        # Calc Total
         g = n['qty'] * n['price']
         d = g * (n['discount_val']/100) if n['discount_type'] == '%' else n['discount_val']
         n['total'] = g - d
@@ -73,14 +81,13 @@ def extract_product_data(label, df_with_labels, name_col):
     
     p_name = str(row[name_col])
     
+    # Safe Price Extraction
     p_price = 0.0
     p_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
     for pc in p_cols:
-        try:
-            val = str(row[pc]).replace('A$', '').replace('$', '').replace(',', '').strip()
-            if val and val.lower() != 'nan':
-                p_price = float(val); break
-        except: continue
+        val = safe_float(row[pc])
+        if val > 0: 
+            p_price = val; break
         
     p_desc = ""
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
@@ -144,23 +151,17 @@ def add_line_item_callback():
     st.toast("Item Added!")
 
 def save_quote_callback():
-    """SAFE SAVE: Runs before render to prevent API errors."""
-    # 1. Validation
+    """SAFE SAVE: Runs before render."""
     if not st.session_state.get("q_client_input"):
-        st.toast("Client Name Required!", icon="⚠️")
-        return
+        st.toast("Client Name Required!", icon="⚠️"); return
 
-    # 2. Get Items
     items = st.session_state.get('quote_items', [])
     if not items:
-        st.toast("No items to save!", icon="⚠️")
-        return
+        st.toast("No items to save!", icon="⚠️"); return
         
-    # 3. Calculate Grand Total (Ex GST sum * 1.1)
     sub_ex = sum(i.get('total', 0) for i in items)
     grand_total = sub_ex * 1.10
     
-    # 4. Prepare Payload
     payload = {
         "client_name": st.session_state.get("q_client_input"),
         "client_email": st.session_state.get("q_email_input"),
@@ -170,14 +171,11 @@ def save_quote_callback():
         "items": items
     }
     
-    # 5. Save to DB
     dm.save_quote(payload, st.session_state['user'])
     
-    # 6. Clear Inputs Safely
     st.session_state['quote_items'] = []
     st.session_state['input_name'] = ""
-    
-    st.toast("Quote Saved Successfully!", icon="✅")
+    st.toast("Quote Saved!", icon="✅")
 
 # --- 3. PDF ENGINE ---
 class QuotePDF(FPDF):
@@ -397,11 +395,9 @@ def main_app():
                 st.session_state['quote_items'] = normalize_items(st.session_state['quote_items'])
                 q_df = pd.DataFrame(st.session_state['quote_items'])
                 
-                # Combine options
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
-                # DYNAMIC KEY forces reset when we increment it
                 dyn_key = f"q_table_{st.session_state['table_key_id']}"
                 
                 edited = st.data_editor(
@@ -427,7 +423,6 @@ def main_app():
                 for idx, row in edited.iterrows():
                     curr_name = str(row['name'])
                     
-                    # IF NAME IS A LONG SEARCH STRING (contains pipe |), PARSE IT
                     if "|" in curr_name and curr_name in search_opts:
                         data = extract_product_data(curr_name, df_lbl, name_col)
                         if data:
@@ -435,12 +430,13 @@ def main_app():
                             row['desc'] = data['desc']
                             row['price'] = data['price']
                             row['qty'] = 1.0
-                            # FLAG TO RESET TABLE
                             trigger_refresh = True
                     
-                    # Calc
-                    q = float(row.get('qty', 1)); p = float(row.get('price', 0))
-                    d = float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
+                    q = safe_float(row.get('qty', 1))
+                    p = safe_float(row.get('price', 0))
+                    d = safe_float(row.get('discount_val', 0))
+                    t = row.get('discount_type', '%')
+                    
                     g = q * p
                     di = g * (d/100) if t == '%' else d
                     n = g - di
@@ -449,10 +445,7 @@ def main_app():
                     r = row.to_dict(); r['total'] = n
                     items_save.append(r)
                 
-                # Update Session State
                 st.session_state['quote_items'] = items_save
-                
-                # FORCE WIDGET RESET IF WE CHANGED DATA
                 if trigger_refresh:
                     st.session_state['table_key_id'] += 1
                     st.rerun()
@@ -477,9 +470,13 @@ def main_app():
             if st.button("Refresh"): dm.get_quotes.clear(); st.rerun()
             hist = dm.get_quotes()
             if not hist.empty:
+                # FIX: Use safe_float for sort/display to prevent crashes
+                hist['sort_amt'] = hist['total_amount'].apply(lambda x: safe_float(x))
                 hist = hist.sort_values(by="created_at", ascending=False)
+                
                 for i, r in hist.iterrows():
-                    with st.expander(f"{r['created_at']} | {r['client_name']} | ${float(r['total_amount']):,.2f}"):
+                    amt = safe_float(r['total_amount'])
+                    with st.expander(f"{r['created_at']} | {r['client_name']} | ${amt:,.2f}"):
                         c1, c2, c3 = st.columns(3)
                         try:
                             pdf = create_pdf(r)
@@ -487,12 +484,10 @@ def main_app():
                         except: c1.error("Error")
                         if c2.button("✏️ Edit", key=f"e_{r['quote_id']}"):
                             st.session_state['quote_items'] = normalize_items(json.loads(r['items_json']))
-                            
-                            # PRE-FILL KEYS FOR EDITING
                             st.session_state['q_client_input'] = r['client_name']
                             st.session_state['q_email_input'] = r.get('client_email', '')
-                            st.session_state['q_phone_input'] = r.get('client_phone', '')
-                            
+                            try: st.session_state['q_phone_input'] = r.get('client_phone', '')
+                            except: pass
                             st.toast("Loaded!"); time.sleep(1)
                         if c3.button("🗑️ Delete", key=f"d_{r['quote_id']}"):
                             dm.delete_quote(r['quote_id'], st.session_state['user']); st.rerun()
