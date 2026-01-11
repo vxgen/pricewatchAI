@@ -10,49 +10,57 @@ import time
 
 st.set_page_config(page_title="Product Check App", layout="wide")
 
-# --- SHARED HELPERS ---
+# --- 1. SHARED HELPERS ---
+
 def safe_float(val):
+    """Safely converts string to float, handling symbols and empty values."""
     try:
         clean = str(val).replace('$', '').replace(',', '').strip()
         if not clean or clean.lower() in ['none', 'nan']: return 0.0
         return float(clean)
-    except: return 0.0
+    except:
+        return 0.0
 
 def sanitize_text(text):
+    """Removes special characters that crash FPDF (e.g. emojis)."""
     if not isinstance(text, str): return str(text)
-    # Replace common issues
+    # Replace common smart quotes or dashes
     text = text.replace('\u2013', '-').replace('\u2019', "'")
+    # Encode to latin-1 to strip incompatible chars
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def normalize_items(items):
+    """Ensures all items have valid keys/types."""
     clean = []
     if not isinstance(items, list): return []
+    
     for item in items:
         n = item.copy()
         n['qty'] = safe_float(n.get('qty', 1))
+        if n['qty'] == 0: n['qty'] = 1.0
+        
         n['price'] = safe_float(n.get('price', 0))
         n['discount_val'] = safe_float(n.get('discount_val', 0))
+        
         if 'discount_type' not in n: n['discount_type'] = '%'
         if 'desc' not in n: n['desc'] = ""
-        if 'name' not in n: n['name'] = "Item"
+        if 'name' not in n or pd.isna(n['name']): n['name'] = "Item"
         
+        # Calc Total
         g = n['qty'] * n['price']
         d = g * (n['discount_val']/100) if n['discount_type'] == '%' else n['discount_val']
         n['total'] = g - d
         clean.append(n)
     return clean
 
-# --- SEARCH LOGIC ---
 def generate_search_labels(df):
     if df.empty: return df, None
     def col_ok(d, c): return not d[c].astype(str).str.strip().eq('').all()
     valid_cols = [c for c in df.columns if col_ok(df, c)]
     if not valid_cols: return df, None
-    
     name_col = valid_cols[0]
     for c in valid_cols:
         if 'product' in c.lower() or 'model' in c.lower(): name_col = c; break
-        
     forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin']
     def mk_lbl(row):
         m = str(row[name_col]) if pd.notnull(row[name_col]) else ""
@@ -71,20 +79,17 @@ def extract_product_data(label, df_with_labels, name_col):
     match = df_with_labels[df_with_labels['Search_Label'] == label]
     if match.empty: return None
     row = match.iloc[0]
-    
     p_name = str(row[name_col])
     p_price = 0.0
     p_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['price', 'msrp', 'srp', 'cost'])]
     for pc in p_cols:
         val = safe_float(row[pc])
         if val > 0: p_price = val; break
-    
     p_desc = ""
     d_cols = [c for c in df_with_labels.columns if any(x in c.lower() for x in ['long description', 'description', 'specs', 'detail'])]
     for dc in d_cols:
         val = str(row[dc])
         if val and val.lower() not in ['nan', 'none', '']: p_desc = val; break
-        
     if not p_desc:
         parts = []
         forbidden = ['price', 'cost', 'date', 'category', 'srp', 'msrp', 'margin', 'search_label']
@@ -95,7 +100,8 @@ def extract_product_data(label, df_with_labels, name_col):
         p_desc = " | ".join(parts)
     return {"name": p_name, "desc": p_desc, "price": p_price}
 
-# --- CALLBACKS ---
+# --- 2. CALLBACKS ---
+
 def on_search_change():
     lbl = st.session_state.get("q_search_product")
     if lbl:
@@ -152,7 +158,7 @@ def save_quote_cb():
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
 
-# --- PDF GENERATOR ---
+# --- 3. PDF ENGINE ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20); self.cell(80, 10, 'MSI', 0, 0, 'L') 
@@ -164,33 +170,30 @@ class QuotePDF(FPDF):
 def create_pdf(quote_row):
     pdf = QuotePDF(); pdf.add_page(); pdf.set_auto_page_break(True, 15)
     
-    # Load Items Safely
     raw_items = quote_row.get('items_json', '[]')
     try: items = normalize_items(json.loads(raw_items))
     except: items = []
     
-    # Info
+    # Sanitize
     c_name = sanitize_text(quote_row.get('client_name', ''))
     c_email = sanitize_text(quote_row.get('client_email', ''))
     c_phone = sanitize_text(str(quote_row.get('client_phone', '')))
     qid = sanitize_text(str(quote_row.get('quote_id', '')))
     dt = str(quote_row.get('created_at', ''))[:10]
     exp = str(quote_row.get('expiration_date', ''))
-    if not exp or exp == 'nan': exp = "N/A" # Fallback if missing
+    if not exp or exp == 'nan': exp = "N/A"
     
-    # Calc
     sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
     
-    # Header Block
+    # Header
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, dt, 0, 1)
-    pdf.set_x(rx); pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, exp, 0, 1) # Explicit Exp
+    pdf.set_x(rx); pdf.cell(30, 6, "Expires:", 0, 0); pdf.cell(30, 6, exp, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
     
-    # Seller/Buyer
     ys = pdf.get_y()
     pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
@@ -213,31 +216,29 @@ def create_pdf(quote_row):
     pdf.cell(25, 8, "Price", 1, 0, 'R', True); pdf.cell(30, 8, "Disc", 1, 0, 'R', True)
     pdf.cell(30, 8, "Total", 1, 1, 'R', True)
     
-    # Table Rows
     pdf.set_font('Arial', '', 9)
     if not items:
         pdf.cell(190, 10, "No items found in data.", 1, 1, 'C')
     else:
         for i in items:
-            nm = sanitize_text(i['name'])[:50]
-            desc = sanitize_text(i['desc'])
+            nm = sanitize_text(i['name'])
+            # Basic wrap or truncation
+            if len(nm)>50: nm = nm[:47]+"..."
             
-            # Row 1: Name & Numbers
+            ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
             pdf.cell(90, 8, nm, 1, 0, 'L')
             pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
             pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
-            ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
             pdf.cell(30, 8, ds, 1, 0, 'R')
             pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
             
-            # Row 2: Description (if exists)
-            if desc:
+            d_txt = sanitize_text(i['desc'])
+            if d_txt:
                 pdf.set_font('Arial', 'I', 8)
-                pdf.cell(190, 6, f"   {desc[:100]}", 'L', 1, 'L') # Indented desc
+                pdf.cell(190, 6, f"   {d_txt[:100]}", 'L', 1, 'L')
                 pdf.set_font('Arial', '', 9)
 
     pdf.ln(5)
-    # Totals
     pdf.set_x(130); pdf.cell(30, 6, "Subtotal:", 0, 0, 'R'); pdf.cell(30, 6, f"${sub:,.2f}", 0, 1, 'R')
     pdf.set_x(130); pdf.cell(30, 6, "GST (10%):", 0, 0, 'R'); pdf.cell(30, 6, f"${gst:,.2f}", 0, 1, 'R')
     pdf.set_font('Arial', 'B', 10)
@@ -267,7 +268,6 @@ def main_app():
                 res = df_lbl[df_lbl['Search_Label'] == sel]
                 for i, r in res.iterrows():
                     with st.expander(f"📦 {r[name_col]}", expanded=True):
-                        # Filter pricing columns from view
                         for c in res.columns:
                             if c not in ['Search_Label'] and 'price' not in c.lower() and 'cost' not in c.lower():
                                 st.write(f"**{c}:** {r[c]}")
@@ -317,7 +317,6 @@ def main_app():
                 curr_names = q_df['name'].unique().tolist()
                 comb_opts = sorted(list(set(search_opts + curr_names))) if search_opts else curr_names
                 
-                # Dynamic Key for Table Reset
                 if 'table_key' not in st.session_state: st.session_state['table_key'] = 0
                 
                 edited = st.data_editor(
@@ -328,7 +327,7 @@ def main_app():
                     }
                 )
                 
-                # Logic to intercept long-string selection in table
+                # Logic to intercept long-string selection
                 new_items = []; trigger_reset = False
                 for idx, row in edited.iterrows():
                     nm = str(row['name'])
@@ -339,7 +338,6 @@ def main_app():
                             row['price'] = d['price']; row['qty'] = 1.0
                             trigger_reset = True
                     
-                    # Recalc
                     q = safe_float(row.get('qty', 1)); p = safe_float(row.get('price', 0))
                     d = safe_float(row.get('discount_val', 0)); t = row.get('discount_type', '%')
                     g = q*p; di = g*(d/100) if t=='%' else d
@@ -365,12 +363,11 @@ def main_app():
             if st.button("Refresh List"): dm.get_quotes.clear(); st.rerun()
             hist = dm.get_quotes()
             if not hist.empty:
-                # Clean headers
                 hist.columns = [c.strip() for c in hist.columns]
                 if 'created_at' in hist.columns: hist = hist.sort_values('created_at', ascending=False)
                 
                 for i, r in hist.iterrows():
-                    # Fallback Total Calculation
+                    # Fallback Total
                     try:
                         amt = safe_float(r.get('total_amount', 0))
                         if amt == 0 and 'items_json' in r:
@@ -380,7 +377,7 @@ def main_app():
                     
                     with st.expander(f"{r.get('created_at','?')} | {r.get('client_name','?')} | ${amt:,.2f}"):
                         try:
-                            pdf_ data = create_pdf(r)
+                            pdf_data = create_pdf(r)
                             st.download_button("📩 Download PDF", pdf_data, f"Quote.pdf", "application/pdf")
                         except Exception as e: st.error(f"PDF Error: {e}")
                         
