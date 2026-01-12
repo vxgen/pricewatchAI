@@ -56,7 +56,7 @@ def get_all_products_df():
 
 @st.cache_data(ttl=5)
 def get_quotes():
-    """Robust fetch of quote history."""
+    """Robust fetch that handles column mismatches safely."""
     try:
         ws = get_sheet().worksheet("quotes")
         data = ws.get_all_values()
@@ -65,9 +65,7 @@ def get_quotes():
         headers = data[0]
         rows = data[1:]
         
-        # Ensure we have data
-        if not rows: return pd.DataFrame(columns=headers)
-
+        # Safe creation
         df = pd.DataFrame(rows, columns=headers)
         return df
     except:
@@ -122,16 +120,27 @@ def save_quote(quote_data, user):
         ws = sh.worksheet("quotes")
     except:
         ws = sh.add_worksheet(title="quotes", rows=1000, cols=15)
-        # DEFINE CORRECT HEADERS
+        # DEFINE HEADERS (Column A to J)
         ws.append_row([
-            "quote_id", "created_at", "created_by", 
-            "client_name", "client_email", "client_phone", 
-            "status", "total_amount", "items_json", "expiration_date"
+            "quote_id", 
+            "created_at", 
+            "created_by", 
+            "client_name", 
+            "client_email", 
+            "client_phone",  # <--- Ensure this column exists
+            "status", 
+            "total_amount", 
+            "items_json", 
+            "expiration_date",
+            "seller_info" # <--- NEW: Store custom seller info
         ])
     
     quote_id = f"Q-{int(time.time())}"
     
-    # WRITE DATA IN EXACT ORDER OF HEADERS
+    # Pack Seller Info into a simple string or JSON
+    seller_info = json.dumps(quote_data.get("seller_info", {}))
+
+    # ROW DATA MUST MATCH HEADER ORDER
     row = [
         quote_id,
         str(datetime.now()),
@@ -142,7 +151,8 @@ def save_quote(quote_data, user):
         "Draft",
         str(quote_data.get("total_amount", 0)),
         json.dumps(quote_data.get("items", [])),
-        quote_data.get("expiration_date", "")
+        str(quote_data.get("expiration_date", "")),
+        seller_info
     ]
     
     ws.append_row(row)
