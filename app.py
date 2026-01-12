@@ -131,7 +131,6 @@ def save_quote_cb():
     items = normalize_items(items)
     total = sum(i['total'] for i in items) * 1.10
     
-    # Store Seller Info
     seller_data = {
         "name": st.session_state.get("s_name", ""),
         "email": st.session_state.get("s_email", ""),
@@ -152,7 +151,7 @@ def save_quote_cb():
     st.session_state['input_name'] = ""
     st.toast("Quote Saved!", icon="✅")
 
-# --- PDF ---
+# --- PDF ENGINE (NEW LAYOUT) ---
 class QuotePDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 20); self.cell(80, 10, 'MSI', 0, 0, 'L') 
@@ -164,33 +163,29 @@ class QuotePDF(FPDF):
 def create_pdf(quote_row):
     pdf = QuotePDF(); pdf.add_page(); pdf.set_auto_page_break(True, 15)
     
-    # Parse Items
     raw_items = quote_row.get('items_json', '[]')
     try: items = normalize_items(json.loads(raw_items))
     except: items = []
     
-    # Parse Seller Info
-    try:
-        seller_info = json.loads(quote_row.get('seller_info', '{}'))
-    except:
-        seller_info = {}
+    try: seller_info = json.loads(quote_row.get('seller_info', '{}'))
+    except: seller_info = {}
     
     s_name = sanitize_text(seller_info.get("name", "MSI Australia"))
     s_email = sanitize_text(seller_info.get("email", "vincentxu@msi.com"))
     s_phone = sanitize_text(seller_info.get("phone", ""))
     
-    # Client Info
     c_name = sanitize_text(quote_row.get('client_name', ''))
     c_email = sanitize_text(quote_row.get('client_email', ''))
     c_phone = sanitize_text(str(quote_row.get('client_phone', '')))
     qid = sanitize_text(str(quote_row.get('quote_id', '')))
     dt = str(quote_row.get('created_at', ''))[:10]
     exp = str(quote_row.get('expiration_date', ''))
+    if not exp or exp == 'nan': exp = "N/A"
     
     sub = sum(i['total'] for i in items)
     gst = sub * 0.10; grand = sub + gst
     
-    # Header
+    # HEADER
     pdf.set_font('Arial', '', 10); rx = 130
     pdf.set_xy(rx, 20); pdf.cell(30, 6, "Quote ref:", 0, 0); pdf.cell(30, 6, qid, 0, 1)
     pdf.set_x(rx); pdf.cell(30, 6, "Issue date:", 0, 0); pdf.cell(30, 6, dt, 0, 1)
@@ -198,12 +193,12 @@ def create_pdf(quote_row):
     pdf.set_x(rx); pdf.cell(30, 6, "Currency:", 0, 0); pdf.cell(30, 6, "AUD", 0, 1)
     pdf.ln(10)
     
-    # Seller
+    # INFO BLOCKS
     ys = pdf.get_y()
     pdf.set_font('Arial', 'B', 11); pdf.cell(90, 6, "Seller", 0, 1)
     pdf.set_font('Arial', '', 10)
     if s_name: pdf.cell(90, 5, s_name, 0, 1)
-    else: pdf.cell(90, 5, "MSI Australia", 0, 1) # Default
+    else: pdf.cell(90, 5, "MSI Australia", 0, 1)
     
     pdf.cell(90, 5, "Suite 304, Level 3, 63-79 Parramatta Rd", 0, 1)
     pdf.cell(90, 5, "Silverwater, NSW 2128, Australia", 0, 1)
@@ -212,7 +207,6 @@ def create_pdf(quote_row):
     if s_phone: contact_str += f" | Phone: {s_phone}"
     pdf.cell(90, 5, contact_str, 0, 1)
     
-    # Buyer
     pdf.set_xy(110, ys)
     pdf.set_font('Arial', 'B', 11); pdf.cell(80, 6, "Buyer", 0, 1)
     pdf.set_x(110); pdf.set_font('Arial', '', 10)
@@ -221,29 +215,44 @@ def create_pdf(quote_row):
     if c_phone and c_phone != 'nan': pdf.set_x(110); pdf.cell(80, 5, f"Phone: {c_phone}", 0, 1)
     pdf.ln(15)
     
-    # Table
+    # TABLE HEADER
     pdf.set_font('Arial', 'B', 10); pdf.set_fill_color(240, 240, 240)
     pdf.cell(90, 8, "Item", 1, 0, 'L', True); pdf.cell(15, 8, "Qty", 1, 0, 'C', True)
     pdf.cell(25, 8, "Price", 1, 0, 'R', True); pdf.cell(30, 8, "Disc", 1, 0, 'R', True)
     pdf.cell(30, 8, "Total", 1, 1, 'R', True)
     
+    # TABLE ROWS (MULTI-CELL LOGIC)
     pdf.set_font('Arial', '', 9)
     if not items:
         pdf.cell(190, 10, "No items found", 1, 1, 'C')
     else:
         for i in items:
-            nm = sanitize_text(i['name'])[:50]
-            ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
-            pdf.cell(90, 8, nm, 1, 0, 'L')
-            pdf.cell(15, 8, str(int(i['qty'])), 1, 0, 'C')
-            pdf.cell(25, 8, f"${i['price']:,.2f}", 1, 0, 'R')
-            pdf.cell(30, 8, ds, 1, 0, 'R')
-            pdf.cell(30, 8, f"${i['total']:,.2f}", 1, 1, 'R')
+            # Prepare Text
+            nm = sanitize_text(i['name'])
             d_txt = sanitize_text(i['desc'])
-            if d_txt:
-                pdf.set_font('Arial', 'I', 8)
-                pdf.cell(190, 6, f"   {d_txt[:100]}", 'L', 1, 'L')
-                pdf.set_font('Arial', '', 9)
+            full_text = nm
+            if d_txt: full_text += f"\n{d_txt}" # Append description in new line inside cell
+            
+            # Save Start Position
+            x_start = pdf.get_x()
+            y_start = pdf.get_y()
+            
+            # Draw Item Column (MultiCell) - Width 90
+            pdf.multi_cell(90, 5, full_text, border=1, align='L')
+            
+            # Calculate Row Height
+            y_end = pdf.get_y()
+            h_row = y_end - y_start
+            
+            # Draw Other Columns (Single Cell with calculated height)
+            pdf.set_xy(x_start + 90, y_start) # Move back to top-right of Item cell
+            
+            pdf.cell(15, h_row, str(int(i['qty'])), 1, 0, 'C')
+            pdf.cell(25, h_row, f"${i['price']:,.2f}", 1, 0, 'R')
+            ds = f"{i['discount_val']}%" if i['discount_type']=='%' else f"${i['discount_val']}"
+            pdf.cell(30, h_row, ds, 1, 0, 'R')
+            # Last cell moves to next line (ln=1)
+            pdf.cell(30, h_row, f"${i['total']:,.2f}", 1, 1, 'R')
 
     pdf.ln(5)
     pdf.set_x(130); pdf.cell(30, 6, "Subtotal:", 0, 0, 'R'); pdf.cell(30, 6, f"${sub:,.2f}", 0, 1, 'R')
@@ -320,7 +329,6 @@ def main_app():
             c4.date_input("Date", date.today(), key="q_date_input")
             c5.date_input("Expire", date.today(), key="q_expire_input")
             
-            # NEW: SELLER SETTINGS
             with st.expander("🏢 Seller Details (Optional)"):
                 st.text_input("Contact Name", value="Vincent Xu", key="s_name")
                 st.text_input("Contact Email", value="vincentxu@msi.com", key="s_email")
@@ -391,8 +399,14 @@ def main_app():
             if st.button("Refresh List"): dm.get_quotes.clear(); st.rerun()
             hist = dm.get_quotes()
             if not hist.empty:
+                # Force correct columns if header names are weird
+                if 'total_amount' not in hist.columns and len(hist.columns) > 7:
+                    # Fallback mapping based on fixed index
+                    pass 
+                
                 hist.columns = [c.strip() for c in hist.columns]
                 if 'created_at' in hist.columns: hist = hist.sort_values('created_at', ascending=False)
+                
                 for i, r in hist.iterrows():
                     try:
                         amt = safe_float(r.get('total_amount', 0))
@@ -404,7 +418,7 @@ def main_app():
                     with st.expander(f"{r.get('created_at','?')} | {r.get('client_name','?')} | ${amt:,.2f}"):
                         try:
                             pdf_data = create_pdf(r)
-                            st.download_button("📩 PDF", pdf_data, f"Quote.pdf", "application/pdf")
+                            st.download_button("📩 Download PDF", pdf_data, f"Quote.pdf", "application/pdf")
                         except Exception as e: st.error(f"PDF Error: {e}")
                         if st.button("✏️ Edit", key=f"e_{i}"):
                             try:
@@ -412,6 +426,11 @@ def main_app():
                                 st.session_state['q_client_input'] = r.get('client_name', '')
                                 st.session_state['q_email_input'] = r.get('client_email', '')
                                 st.session_state['q_phone_input'] = r.get('client_phone', '')
+                                # Load Seller Info if present
+                                s_inf = json.loads(r.get('seller_info', '{}'))
+                                st.session_state['s_name'] = s_inf.get('name', 'Vincent Xu')
+                                st.session_state['s_email'] = s_inf.get('email', 'vincentxu@msi.com')
+                                st.session_state['s_phone'] = s_inf.get('phone', '')
                                 st.toast("Loaded!"); time.sleep(1)
                             except: st.error("Data Error")
                         if st.button("Delete", key=f"d_{i}"):
@@ -454,7 +473,10 @@ def login_page():
     p = st.text_input("Pass", type="password")
     if st.button("Sign In"):
         s, m = check_login(u, p)
-        if s: st.session_state['logged_in'] = True; st.session_state['user'] = u; st.rerun()
+        if s: 
+            st.session_state['logged_in'] = True
+            st.session_state['user'] = u
+            st.rerun()
         else: st.error(m)
 
 if st.session_state['logged_in']: main_app()
